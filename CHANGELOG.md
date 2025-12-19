@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.5] - 2024-12-19
+
+### Fixed
+- FlareSolverr URL auto-normalization: automatically appends /v1 if missing
+- Fixes 405 Method Not Allowed when FLARESOLVERR_URL is set without /v1 path
+
 ## [1.1.4] - 2024-12-19
 
 ### Added

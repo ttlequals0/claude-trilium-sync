@@ -207,12 +207,18 @@ class ClaudeAPI:
     async def _solve_cloudflare(self) -> tuple[list[dict], str]:
         """Use FlareSolverr to solve Cloudflare challenge and get cookies."""
         log.info("[FLARESOLVERR] Solving Cloudflare challenge...")
-        log.info(f"[FLARESOLVERR] >>> POST {CONFIG['flaresolverr_url']}")
+
+        # Normalize FlareSolverr URL - ensure it ends with /v1
+        flaresolverr_url = CONFIG['flaresolverr_url'].rstrip('/')
+        if not flaresolverr_url.endswith('/v1'):
+            flaresolverr_url = f"{flaresolverr_url}/v1"
+
+        log.info(f"[FLARESOLVERR] >>> POST {flaresolverr_url}")
         log.info(f"[FLARESOLVERR] >>> Target URL: {self.BASE_URL}/")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                CONFIG["flaresolverr_url"],
+                flaresolverr_url,
                 json={
                     "cmd": "request.get",
                     "url": f"{self.BASE_URL}/",
