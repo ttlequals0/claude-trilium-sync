@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.1] - 2024-12-19
+
+### Fixed
+- Navigation timeout by switching from `networkidle` to `domcontentloaded` wait condition
+- Increased navigation timeout from 30s to 60s for slower connections
+
+### Added
+- Verbose debug logging throughout Playwright operations
+- Logging for browser init, cookie injection, navigation, and API requests
+- 2-second stabilization wait after page load for JS initialization
+
 ## [1.1.0] - 2024-12-19
 
 ### Changed

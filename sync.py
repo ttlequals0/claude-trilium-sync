@@ -199,19 +199,25 @@ class ClaudeAPI:
     async def _init_browser(self):
         """Initialize Playwright browser with session cookie."""
         if self.browser:
+            log.debug("Browser already initialized, reusing existing instance")
             return
 
         log.debug("Initializing Playwright browser...")
+        log.debug("Starting Playwright...")
         self.playwright = await async_playwright().start()
+        log.debug("Playwright started, launching Chromium...")
         self.browser = await self.playwright.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-dev-shm-usage']
         )
+        log.debug("Chromium launched, creating browser context...")
         self.context = await self.browser.new_context(
             user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
+        log.debug("Browser context created")
 
         # Set the session cookie
+        log.debug(f"Injecting sessionKey cookie (length: {len(self.session_key)} chars)...")
         await self.context.add_cookies([{
             'name': 'sessionKey',
             'value': self.session_key,
@@ -220,13 +226,17 @@ class ClaudeAPI:
             'httpOnly': True,
             'secure': True,
         }])
+        log.debug("Session cookie injected")
 
+        log.debug("Creating new page...")
         self.page = await self.context.new_page()
-        log.debug("Browser initialized")
+        log.debug("Browser initialized successfully")
 
     async def _api_request(self, endpoint: str) -> dict:
         """Make an API request from within the browser context."""
         await self._init_browser()
+
+        log.debug(f"API request: GET /api{endpoint}")
 
         # Use page.evaluate to make fetch request from browser context
         # This inherits all cookies and browser security context
@@ -246,25 +256,49 @@ class ClaudeAPI:
                 return await response.json();
             }}
         """)
+
+        # Log response info
+        if isinstance(result, list):
+            log.debug(f"API response: {len(result)} items")
+        elif isinstance(result, dict):
+            log.debug(f"API response: {len(result)} keys")
+        else:
+            log.debug(f"API response received")
+
         return result
 
     async def _get_org_id(self) -> str:
         """Get the organization ID for the authenticated user."""
         if self._org_id:
+            log.debug(f"Using cached organization ID: {self._org_id}")
             return self._org_id
 
         log.debug("Fetching organization ID...")
 
         # First navigate to Claude to establish the session
         await self._init_browser()
-        await self.page.goto(f"{self.BASE_URL}/", wait_until="networkidle")
+
+        log.debug(f"Navigating to {self.BASE_URL}/...")
+        await self.page.goto(
+            f"{self.BASE_URL}/",
+            wait_until="domcontentloaded",
+            timeout=60000
+        )
+        log.debug(f"Navigation complete, current URL: {self.page.url}")
+
+        # Wait for page to stabilize after initial load
+        log.debug("Waiting for page to stabilize...")
+        await asyncio.sleep(2)
 
         # Check if we're on a login page (session expired)
         current_url = self.page.url
+        log.debug(f"Checking URL for login redirect: {current_url}")
         if "login" in current_url or "auth" in current_url:
             raise ValueError("Session expired - redirected to login page")
 
+        log.debug("Making API request for /organizations...")
         orgs = await self._api_request("/organizations")
+        log.debug(f"Got {len(orgs)} organization(s)")
 
         if not orgs:
             raise ValueError("No organizations found for this account")
