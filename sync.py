@@ -187,6 +187,7 @@ class ClaudeAPI:
     """Playwright-based client for Claude.ai API."""
 
     BASE_URL = "https://claude.ai"
+    API_BASE_URL = "https://api.claude.ai"  # API calls use different subdomain
 
     def __init__(self, session_key: str):
         self.session_key = session_key
@@ -236,13 +237,13 @@ class ClaudeAPI:
         """Make an API request from within the browser context."""
         await self._init_browser()
 
-        log.debug(f"API request: GET /api{endpoint}")
+        log.debug(f"API request: GET {self.API_BASE_URL}/api{endpoint}")
 
         # Use page.evaluate to make fetch request from browser context
         # This inherits all cookies and browser security context
         result = await self.page.evaluate(f"""
             async () => {{
-                const response = await fetch('{self.BASE_URL}/api{endpoint}', {{
+                const response = await fetch('{self.API_BASE_URL}/api{endpoint}', {{
                     method: 'GET',
                     credentials: 'include',
                     headers: {{

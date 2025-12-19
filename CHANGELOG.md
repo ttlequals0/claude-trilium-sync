@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.2] - 2024-12-19
+
+### Fixed
+- API 403 Forbidden error by using correct API subdomain (api.claude.ai instead of claude.ai)
+
 ## [1.1.1] - 2024-12-19
 
 ### Fixed
