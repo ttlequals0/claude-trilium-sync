@@ -8,14 +8,32 @@ Automatically sync your Claude.ai conversations to Trilium Notes.
 - **Incremental updates**: Only syncs changed conversations using content hashing
 - **Merge support**: Updates existing notes when conversations are extended
 - **Formatted output**: Converts messages to nicely styled HTML with code highlighting
-- **Lightweight**: Uses direct HTTP API calls (no browser/Playwright needed)
-- **Docker-ready**: Designed to run as a container
+- **Cloudflare bypass**: Uses FlareSolverr to handle Claude.ai's Cloudflare protection
+- **Docker-ready**: Designed to run as a container alongside FlareSolverr
 
 ## Prerequisites
 
 1. **Trilium Notes** instance (self-hosted or TriliumNext)
 2. **Claude.ai** account with active conversations
 3. **Docker** and Docker Compose
+4. **FlareSolverr** - Required for Cloudflare bypass
+
+## Architecture
+
+Claude.ai uses Cloudflare protection that blocks direct API requests. This tool uses [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr) to route all requests through a real Chrome browser, bypassing TLS fingerprinting and Cloudflare challenges.
+
+```
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│  claude-sync    │────▶│  FlareSolverr   │────▶│   claude.ai     │
+│   (this app)    │     │  (real Chrome)  │     │   (Cloudflare)  │
+└─────────────────┘     └─────────────────┘     └─────────────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Trilium Notes  │
+│    (ETAPI)      │
+└─────────────────┘
+```
 
 ## Quick Start
 
@@ -34,7 +52,7 @@ Automatically sync your Claude.ai conversations to Trilium Notes.
 3. Go to **Application** tab → **Cookies** → `claude.ai`
 4. Find `sessionKey` and copy its value
 
-> ⚠️ **Note**: The session key expires periodically. You'll need to update it when syncs start failing with auth errors.
+> **Note**: The session key expires periodically. You'll need to update it when syncs start failing with auth errors.
 
 ### 3. Configure and Run
 
@@ -48,11 +66,11 @@ cp .env.example .env
 # Edit .env with your tokens
 nano .env
 
-# Start the sync service
+# Start the services (includes FlareSolverr)
 docker-compose up -d
 
 # Check logs
-docker-compose logs -f
+docker-compose logs -f claude-trilium-sync
 ```
 
 ## Configuration
@@ -62,6 +80,7 @@ docker-compose logs -f
 | `TRILIUM_TOKEN` | Yes | - | ETAPI token from Trilium |
 | `CLAUDE_SESSION_KEY` | Yes | - | Session cookie from claude.ai |
 | `TRILIUM_URL` | No | `http://trilium:8080` | Trilium server URL |
+| `FLARESOLVERR_URL` | No | `http://flaresolverr:8191/v1` | FlareSolverr endpoint |
 | `SYNC_INTERVAL` | No | `3600` | Seconds between syncs (0 = one-shot) |
 | `LOG_LEVEL` | No | `INFO` | DEBUG, INFO, WARNING, ERROR |
 | `PARENT_NOTE_ID` | No | - | Import under this specific Trilium note ID |
@@ -108,9 +127,9 @@ You'll receive a high-priority notification when authentication fails, with a di
 
 ## How It Works
 
-1. **Fetch conversations**: Uses Claude's internal API to list all conversations
+1. **Fetch conversations**: Routes requests through FlareSolverr to Claude's internal API
 2. **Check for changes**: Computes content hash and compares with last sync
-3. **Sync to Trilium**: Creates new notes or updates existing ones
+3. **Sync to Trilium**: Creates new notes or updates existing ones via ETAPI
 4. **Track state**: Saves sync state to persist between restarts
 
 ### Note Structure
@@ -121,14 +140,37 @@ Notes are created under a "Claude Chats" parent note with:
 - `#claudeConversationId` with the Claude UUID
 - `#claudeUpdatedAt` with last update timestamp
 
-## Alternative: Cron-based Scheduling
+## Docker Compose Setup
 
-If you prefer cron over the built-in interval:
+The included `docker-compose.yml` sets up both services:
+
+```yaml
+services:
+  claude-trilium-sync:
+    image: ttlequals0/claude-trilium-sync:latest
+    environment:
+      - TRILIUM_TOKEN=${TRILIUM_TOKEN}
+      - CLAUDE_SESSION_KEY=${CLAUDE_SESSION_KEY}
+      - TRILIUM_URL=${TRILIUM_URL:-http://trilium:8080}
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191/v1}
+    depends_on:
+      - flaresolverr
+
+  flaresolverr:
+    image: ghcr.io/flaresolverr/flaresolverr:latest
+    environment:
+      - LOG_LEVEL=info
+```
+
+## Alternative: External FlareSolverr
+
+If you already have FlareSolverr running elsewhere:
 
 ```bash
-# Set SYNC_INTERVAL=0 in .env, then add to crontab:
-0 * * * * cd /path/to/claude-trilium-sync && docker-compose run --rm claude-trilium-sync
+FLARESOLVERR_URL=http://192.168.1.100:8191/v1
 ```
+
+Note: The `/v1` path is required. If omitted, it will be auto-appended.
 
 ## Connecting to External Trilium
 
@@ -149,10 +191,19 @@ services:
 ### "Authentication failed" errors
 Your Claude session key has expired. Get a fresh one from the browser.
 
+### "403 Forbidden" errors
+- Ensure FlareSolverr is running and accessible
+- Check `FLARESOLVERR_URL` is correct
+- Try restarting FlareSolverr to clear its browser session
+
 ### "No conversations found"
 - Verify the session key is correct
 - Check if you have any conversations in Claude
 - Try with `LOG_LEVEL=DEBUG` for more info
+
+### "Invalid authorization for organization"
+- This can occur if your account has multiple organizations
+- The sync will automatically select an organization with chat access
 
 ### Can't connect to Trilium
 - Verify `TRILIUM_URL` is correct
@@ -176,6 +227,7 @@ pip install -r requirements.txt
 export TRILIUM_TOKEN="your-token"
 export CLAUDE_SESSION_KEY="your-session-key"
 export TRILIUM_URL="http://localhost:8080"
+export FLARESOLVERR_URL="http://localhost:8191/v1"
 export SYNC_INTERVAL=0
 
 python sync.py
@@ -184,4 +236,3 @@ python sync.py
 ## License
 
 MIT
-# claude-trilium-sync

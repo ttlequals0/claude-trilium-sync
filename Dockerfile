@@ -1,16 +1,16 @@
 FROM python:3.12-slim
 
 LABEL maintainer="claude-trilium-sync"
-LABEL description="Syncs Claude.ai conversations to Trilium Notes"
+LABEL description="Syncs Claude.ai conversations to Trilium Notes using FlareSolverr"
 
 WORKDIR /app
 
-# Install dependencies
+# Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY sync.py .
+COPY sync.py version.py ./
 
 # Create data directory for state persistence
 RUN mkdir -p /data
