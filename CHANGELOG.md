@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.7] - 2024-12-19
+
+### Changed
+- Replaced Playwright browser automation with direct HTTP requests
+- Uses FlareSolverr cookies directly with httpx for API calls
+- Removed Playwright dependency (image now ~300MB smaller)
+- Removed shm_size requirement from docker-compose
+
+### Fixed
+- "Failed to fetch" error caused by cross-origin browser restrictions
+- Simplified architecture: FlareSolverr cookies + httpx instead of Playwright
+
 ## [1.1.6] - 2024-12-19
 
 ### Fixed
