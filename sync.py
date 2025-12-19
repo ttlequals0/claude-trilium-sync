@@ -191,7 +191,6 @@ class ClaudeAPI:
     """HTTP client for Claude.ai API using FlareSolverr for Cloudflare bypass."""
 
     BASE_URL = "https://claude.ai"
-    API_BASE_URL = "https://api.claude.ai"
 
     def __init__(self, session_key: str):
         self.session_key = session_key
@@ -278,7 +277,7 @@ class ClaudeAPI:
         """Make an API request using httpx with FlareSolverr cookies."""
         await self._init_client()
 
-        full_url = f"{self.API_BASE_URL}/api{endpoint}"
+        full_url = f"{self.BASE_URL}/api{endpoint}"
         log.info(f"[CLAUDE API] >>> GET {full_url}")
 
         response = await self._http_client.get(full_url)

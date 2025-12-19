@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.8] - 2024-12-19
+
+### Fixed
+- Corrected API endpoint: use `claude.ai/api/` instead of non-existent `api.claude.ai`
+- Fixes DNS resolution error "[Errno -2] Name or service not known"
+
 ## [1.1.7] - 2024-12-19
 
 ### Changed
