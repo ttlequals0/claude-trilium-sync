@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application
-COPY sync.py .
+COPY sync.py version.py ./
 
 # Create data directory for state persistence
 RUN mkdir -p /data

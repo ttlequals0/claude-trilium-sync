@@ -38,6 +38,8 @@ from typing import Optional
 import httpx
 from trilium_py.client import ETAPI
 
+from version import get_version
+
 # Configuration from environment
 CONFIG = {
     "trilium_url": os.environ.get("TRILIUM_URL", "http://localhost:8080"),
@@ -621,6 +623,9 @@ def run_sync():
 
 
 def main():
+    # Log version at startup
+    log.info(f"Claude-Trilium Sync v{get_version()} starting")
+
     # Validate configuration
     if not CONFIG["trilium_token"]:
         log.error("TRILIUM_TOKEN not set")
