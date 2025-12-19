@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.10] - 2024-12-19
+
+### Fixed
+- Added browser-like headers (Origin, Referer, Sec-Fetch-*, etc.) to HTTP requests
+- Claude's API validates these headers to detect non-browser requests
+- Fixes 403 Forbidden that occurred even with valid cookies
+
 ## [1.1.9] - 2024-12-19
 
 ### Fixed

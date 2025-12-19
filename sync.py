@@ -263,14 +263,25 @@ class ClaudeAPI:
         cookies["sessionKey"] = self.session_key
         log.info(f"[HTTP] Added sessionKey cookie (length: {len(self.session_key)} chars)")
 
-        # Create HTTP client with cookies and user agent
+        # Create HTTP client with cookies and browser-like headers
+        # Claude's API checks for these headers to detect non-browser requests
         log.info("[HTTP] Creating HTTP client with cookies...")
         self._http_client = httpx.AsyncClient(
             cookies=cookies,
             headers={
                 "User-Agent": user_agent,
-                "Accept": "application/json",
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Accept-Encoding": "gzip, deflate, br",
                 "Content-Type": "application/json",
+                "Origin": "https://claude.ai",
+                "Referer": "https://claude.ai/",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120"',
+                "Sec-Ch-Ua-Mobile": "?0",
+                "Sec-Ch-Ua-Platform": '"Linux"',
             },
             timeout=30.0,
             follow_redirects=True,
