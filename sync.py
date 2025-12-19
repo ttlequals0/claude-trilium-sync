@@ -21,6 +21,8 @@ Environment Variables:
     PUSHOVER_USER_KEY: Pushover user key for notifications (optional)
     PUSHOVER_API_TOKEN: Pushover application token (optional)
     PUSHOVER_DEVICE: Specific device to notify (optional)
+
+    FLARESOLVERR_URL: FlareSolverr endpoint for Cloudflare bypass (default: http://flaresolverr:8191/v1)
 """
 
 import asyncio
@@ -59,6 +61,9 @@ CONFIG = {
     "pushover_user_key": os.environ.get("PUSHOVER_USER_KEY", ""),
     "pushover_api_token": os.environ.get("PUSHOVER_API_TOKEN", ""),
     "pushover_device": os.environ.get("PUSHOVER_DEVICE", ""),
+
+    # FlareSolverr for Cloudflare bypass
+    "flaresolverr_url": os.environ.get("FLARESOLVERR_URL", "http://flaresolverr:8191/v1"),
 }
 
 # Setup logging
@@ -196,12 +201,59 @@ class ClaudeAPI:
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
         self._org_id: Optional[str] = None
+        self._flaresolverr_cookies: Optional[list] = None
+        self._flaresolverr_user_agent: Optional[str] = None
+
+    async def _solve_cloudflare(self) -> tuple[list[dict], str]:
+        """Use FlareSolverr to solve Cloudflare challenge and get cookies."""
+        log.info("[FLARESOLVERR] Solving Cloudflare challenge...")
+        log.info(f"[FLARESOLVERR] >>> POST {CONFIG['flaresolverr_url']}")
+        log.info(f"[FLARESOLVERR] >>> Target URL: {self.BASE_URL}/")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                CONFIG["flaresolverr_url"],
+                json={
+                    "cmd": "request.get",
+                    "url": f"{self.BASE_URL}/",
+                    "maxTimeout": 60000
+                },
+                timeout=90.0
+            )
+            data = response.json()
+
+        status = data.get("status")
+        log.info(f"[FLARESOLVERR] <<< Status: {status}")
+
+        if status != "ok":
+            error_msg = data.get("message", "Unknown error")
+            log.error(f"[FLARESOLVERR] <<< Error: {error_msg}")
+            raise ValueError(f"FlareSolverr error: {error_msg}")
+
+        solution = data["solution"]
+        cookies = solution.get("cookies", [])
+        user_agent = solution.get("userAgent", "")
+
+        log.info(f"[FLARESOLVERR] <<< Got {len(cookies)} cookies")
+        log.info(f"[FLARESOLVERR] <<< User-Agent: {user_agent[:50]}...")
+
+        # Log cookie names (not values for security)
+        cookie_names = [c.get("name") for c in cookies]
+        log.info(f"[FLARESOLVERR] <<< Cookie names: {cookie_names}")
+
+        return cookies, user_agent
 
     async def _init_browser(self):
-        """Initialize Playwright browser with session cookie."""
+        """Initialize Playwright browser with FlareSolverr cookies."""
         if self.browser:
             log.info("[BROWSER] Reusing existing browser instance")
             return
+
+        # First, solve Cloudflare challenge via FlareSolverr
+        log.info("[BROWSER] Getting cookies from FlareSolverr...")
+        flaresolverr_cookies, user_agent = await self._solve_cloudflare()
+        self._flaresolverr_cookies = flaresolverr_cookies
+        self._flaresolverr_user_agent = user_agent
 
         log.info("[BROWSER] Initializing Playwright browser...")
         self.playwright = await async_playwright().start()
@@ -212,25 +264,43 @@ class ClaudeAPI:
         )
         log.info("[BROWSER] Chromium launched successfully")
 
-        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        log.info(f"[BROWSER] Creating context with User-Agent: {user_agent[:50]}...")
+        # Use the same user agent FlareSolverr used
+        log.info(f"[BROWSER] Creating context with FlareSolverr User-Agent")
         self.context = await self.browser.new_context(user_agent=user_agent)
 
-        # Set the session cookie
-        log.info(f"[BROWSER] Injecting sessionKey cookie (length: {len(self.session_key)} chars)")
-        log.info(f"[BROWSER] Cookie domain: .claude.ai, path: /, httpOnly: True, secure: True")
-        await self.context.add_cookies([{
+        # Convert FlareSolverr cookies to Playwright format
+        cookies = []
+        for c in flaresolverr_cookies:
+            cookie = {
+                'name': c['name'],
+                'value': c['value'],
+                'domain': c.get('domain', '.claude.ai'),
+                'path': c.get('path', '/'),
+            }
+            # Only add optional fields if they exist
+            if 'httpOnly' in c:
+                cookie['httpOnly'] = c['httpOnly']
+            if 'secure' in c:
+                cookie['secure'] = c['secure']
+            cookies.append(cookie)
+
+        # Add the sessionKey cookie
+        log.info(f"[BROWSER] Adding sessionKey cookie (length: {len(self.session_key)} chars)")
+        cookies.append({
             'name': 'sessionKey',
             'value': self.session_key,
             'domain': '.claude.ai',
             'path': '/',
             'httpOnly': True,
             'secure': True,
-        }])
-        log.info("[BROWSER] Session cookie injected successfully")
+        })
+
+        log.info(f"[BROWSER] Injecting {len(cookies)} cookies...")
+        await self.context.add_cookies(cookies)
+        log.info("[BROWSER] Cookies injected successfully")
 
         self.page = await self.context.new_page()
-        log.info("[BROWSER] Browser page created and ready")
+        log.info("[BROWSER] Browser ready with FlareSolverr cookies")
 
     async def _api_request(self, endpoint: str) -> dict:
         """Make an API request from within the browser context."""
@@ -284,31 +354,27 @@ class ClaudeAPI:
 
         log.info("[CLAUDE API] Fetching organization ID...")
 
-        # First navigate to Claude to establish the session
+        # Initialize browser with FlareSolverr cookies
         await self._init_browser()
 
-        log.info(f"[BROWSER] Navigating to {self.BASE_URL}/ ...")
-        log.info(f"[BROWSER] Wait condition: domcontentloaded, timeout: 60000ms")
+        # Navigate to Claude.ai to establish page context for API calls
+        log.info(f"[BROWSER] Navigating to {self.BASE_URL}/ (with FlareSolverr cookies)...")
         await self.page.goto(
             f"{self.BASE_URL}/",
             wait_until="domcontentloaded",
             timeout=60000
         )
-        log.info(f"[BROWSER] Navigation complete!")
-        log.info(f"[BROWSER] Current URL: {self.page.url}")
+        log.info(f"[BROWSER] Navigation complete, URL: {self.page.url}")
 
-        # Wait for page to stabilize after initial load
-        log.info("[BROWSER] Waiting 2s for page to stabilize...")
-        await asyncio.sleep(2)
-
-        # Check if we're on a login page (session expired)
+        # Check for problematic redirects
         current_url = self.page.url
-        log.info(f"[BROWSER] Final URL after stabilization: {current_url}")
         if "login" in current_url or "auth" in current_url:
-            log.error("[BROWSER] DETECTED LOGIN REDIRECT - Session appears to be expired!")
+            log.error("[BROWSER] DETECTED LOGIN REDIRECT - Session key may be expired!")
             raise ValueError("Session expired - redirected to login page")
+        if "challenge_redirect" in current_url:
+            log.error("[BROWSER] DETECTED CLOUDFLARE CHALLENGE - FlareSolverr cookies may have expired!")
+            raise ValueError("Cloudflare challenge detected - try restarting the container")
 
-        log.info("[BROWSER] No login redirect detected, session appears valid")
         log.info("[CLAUDE API] Fetching organizations list...")
         orgs = await self._api_request("/organizations")
 
@@ -758,6 +824,7 @@ async def async_main():
         log.info(f"[CONFIG]   PUSHOVER: Enabled")
     else:
         log.info(f"[CONFIG]   PUSHOVER: Disabled")
+    log.info(f"[CONFIG]   FLARESOLVERR_URL: {CONFIG['flaresolverr_url']}")
 
     if not CONFIG["trilium_token"]:
         log.error("[CONFIG] TRILIUM_TOKEN not set!")

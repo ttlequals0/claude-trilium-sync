@@ -24,6 +24,9 @@ services:
       - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY:-}
       - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN:-}
       - PUSHOVER_DEVICE=${PUSHOVER_DEVICE:-}
+
+      # FlareSolverr for Cloudflare bypass
+      - FLARESOLVERR_URL=${FLARESOLVERR_URL:-http://flaresolverr:8191/v1}
     volumes:
       - sync-state:/data
     networks:

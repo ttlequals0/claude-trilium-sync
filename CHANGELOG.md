@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.4] - 2024-12-19
+
+### Added
+- FlareSolverr integration for automatic Cloudflare challenge bypass
+- FLARESOLVERR_URL environment variable (default: http://flaresolverr:8191/v1)
+- Detection for Cloudflare challenge_redirect with helpful error message
+
+### Changed
+- Browser initialization now gets cookies from FlareSolverr before launching Playwright
+- Uses FlareSolverr's user agent for consistent browser fingerprint
+- Simplified _get_org_id() navigation flow
+
 ## [1.1.3] - 2024-12-19
 
 ### Added
