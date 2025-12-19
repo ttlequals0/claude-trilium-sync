@@ -3,6 +3,7 @@ services:
     image: ttlequals0/claude-trilium-sync:latest
     container_name: claude-trilium-sync
     restart: unless-stopped
+    shm_size: '2gb'
     environment:
       # Required
       - TRILIUM_TOKEN=${TRILIUM_TOKEN}

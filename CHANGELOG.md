@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2024-12-19
+
+### Changed
+- Replaced direct HTTP API calls with Playwright browser automation
+- This bypasses Claude.ai's API protections that were causing 403 errors
+- Converted application to async/await pattern for Playwright compatibility
+
+### Added
+- Playwright dependency for headless browser automation
+- Session detection for expired login redirects
+- shm_size configuration in docker-compose for Chrome stability
+
+### Technical
+- ClaudeAPI class now uses Playwright to make API calls from browser context
+- API requests made via page.evaluate() inherit all cookies and security context
+- Docker image now includes Chromium browser (~300MB larger)
+
 ## [1.0.0] - 2024-12-19
 
 ### Added
