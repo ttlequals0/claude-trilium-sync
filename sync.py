@@ -609,17 +609,16 @@ class TriliumSync:
             timestamp = msg.get("created_at", "")
 
             is_human = sender == "human"
-            border_color = "#3b82f6" if is_human else "#10b981"
-            bg_color = "#eff6ff" if is_human else "#f0fdf4"
             sender_label = "Human" if is_human else "Claude"
 
             formatted_text = self._format_message_content(text)
 
             html_parts.append(f"""
-<div style="margin: 1em 0; padding: 1em; border-left: 4px solid {border_color}; background: {bg_color};">
+<div style="margin: 1.5em 0; padding: 0.5em 0;">
     <p style="margin: 0 0 0.5em 0;"><strong>{sender_label}</strong> <span style="color: #6b7280; font-size: 0.875em;">({timestamp})</span></p>
     <div style="margin: 0;">{formatted_text}</div>
 </div>
+<hr style="border: none; border-top: 1px solid #e5e7eb; margin: 0;" />
 """)
 
         return "\n".join(html_parts)

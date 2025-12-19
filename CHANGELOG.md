@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.15] - 2024-12-19
+
+### Changed
+- Simplified message formatting: removed colored backgrounds
+- Messages now separated by horizontal lines instead of colored boxes
+- Cleaner, more readable appearance in Trilium
+
 ## [1.1.14] - 2024-12-19
 
 ### Fixed
