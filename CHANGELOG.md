@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.14] - 2024-12-19
+
+### Fixed
+- Improved organization selection: prefer non-Individual orgs for chat access
+- Log all available organizations with their capabilities for debugging
+- "Invalid authorization for organization" was caused by using wrong org
+
 ## [1.1.13] - 2024-12-19
 
 ### Fixed

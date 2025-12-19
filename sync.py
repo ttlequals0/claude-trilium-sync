@@ -343,9 +343,28 @@ class ClaudeAPI:
             log.error("[CLAUDE API] No organizations returned!")
             raise ValueError("No organizations found for this account")
 
-        self._org_id = orgs[0]["uuid"]
-        org_name = orgs[0].get("name", "Unknown")
-        log.info(f"[CLAUDE API] Using organization: {org_name} (ID: {self._org_id})")
+        # Log all available organizations
+        log.info(f"[CLAUDE API] Found {len(orgs)} organizations:")
+        for i, org in enumerate(orgs):
+            org_name = org.get("name", "Unknown")
+            org_id = org.get("uuid", "Unknown")
+            caps = org.get("capabilities", [])
+            log.info(f"[CLAUDE API]   [{i}] {org_name} (ID: {org_id})")
+            log.info(f"[CLAUDE API]       Capabilities: {caps[:5]}...")
+
+        # Try to find an org with chat capabilities, otherwise use first
+        # Prefer orgs that are NOT "Individual Org" as those may have restrictions
+        selected_org = orgs[0]
+        for org in orgs:
+            org_name = org.get("name", "")
+            # Skip individual orgs if we have other options
+            if "Individual" not in org_name and len(orgs) > 1:
+                selected_org = org
+                break
+
+        self._org_id = selected_org["uuid"]
+        org_name = selected_org.get("name", "Unknown")
+        log.info(f"[CLAUDE API] Selected organization: {org_name} (ID: {self._org_id})")
         return self._org_id
 
     async def get_conversations_list(self) -> list[dict]:
