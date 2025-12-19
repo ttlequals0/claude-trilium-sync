@@ -209,6 +209,7 @@ class ClaudeAPI:
 
         log.info(f"[FLARESOLVERR] >>> POST {flaresolverr_url}")
         log.info(f"[FLARESOLVERR] >>> Target URL: {self.BASE_URL}/")
+        log.info(f"[FLARESOLVERR] >>> Passing sessionKey cookie to FlareSolverr")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -216,7 +217,10 @@ class ClaudeAPI:
                 json={
                     "cmd": "request.get",
                     "url": f"{self.BASE_URL}/",
-                    "maxTimeout": 60000
+                    "maxTimeout": 60000,
+                    # Pass sessionKey to FlareSolverr so cf_clearance is generated
+                    # for a logged-in session, not an anonymous one
+                    "cookies": [{"name": "sessionKey", "value": self.session_key}]
                 },
                 timeout=90.0
             )

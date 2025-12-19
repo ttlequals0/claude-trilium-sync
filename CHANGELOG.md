@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.9] - 2024-12-19
+
+### Fixed
+- Pass sessionKey cookie to FlareSolverr during Cloudflare bypass
+- Ensures cf_clearance is generated for logged-in session, not anonymous
+- Fixes 403 Forbidden on second API request after first succeeds
+
 ## [1.1.8] - 2024-12-19
 
 ### Fixed
