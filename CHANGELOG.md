@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.6] - 2024-12-19
+
+### Fixed
+- Cookie domain normalization for API subdomain compatibility
+- Ensures all cookies from FlareSolverr use `.claude.ai` domain (with leading dot)
+- Fixes "Failed to fetch" error when calling api.claude.ai from claude.ai page context
+
 ## [1.1.5] - 2024-12-19
 
 ### Fixed

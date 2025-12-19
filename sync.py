@@ -275,12 +275,18 @@ class ClaudeAPI:
         self.context = await self.browser.new_context(user_agent=user_agent)
 
         # Convert FlareSolverr cookies to Playwright format
+        # Force domain to .claude.ai for all cookies so they work on api.claude.ai subdomain
         cookies = []
         for c in flaresolverr_cookies:
+            # Normalize domain - ensure it starts with dot for subdomain compatibility
+            domain = c.get('domain', '.claude.ai')
+            if domain and 'claude.ai' in domain and not domain.startswith('.'):
+                domain = '.' + domain
+
             cookie = {
                 'name': c['name'],
                 'value': c['value'],
-                'domain': c.get('domain', '.claude.ai'),
+                'domain': domain,
                 'path': c.get('path', '/'),
             }
             # Only add optional fields if they exist
@@ -289,6 +295,7 @@ class ClaudeAPI:
             if 'secure' in c:
                 cookie['secure'] = c['secure']
             cookies.append(cookie)
+            log.debug(f"[BROWSER] Cookie: {c['name']} -> domain={domain}")
 
         # Add the sessionKey cookie
         log.info(f"[BROWSER] Adding sessionKey cookie (length: {len(self.session_key)} chars)")
