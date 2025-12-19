@@ -514,6 +514,7 @@ class TriliumSync:
                 type="label",
                 name=self.parent_label,
                 value="",
+                isInheritable=False,
             )
             log.info("[TRILIUM] <<< Attribute created successfully")
         except Exception as e:
@@ -666,18 +667,21 @@ class TriliumSync:
             type="label",
             name="claudeConversationId",
             value=conv_id,
+            isInheritable=False,
         )
         self.ea.create_attribute(
             noteId=note_id,
             type="label",
             name="claudeUpdatedAt",
             value=updated_at,
+            isInheritable=False,
         )
         self.ea.create_attribute(
             noteId=note_id,
             type="label",
             name="claudeChat",
             value="",
+            isInheritable=False,
         )
         log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 

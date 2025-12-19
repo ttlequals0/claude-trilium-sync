@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.16] - 2024-12-19
+
+### Fixed
+- Added missing `isInheritable` parameter to ETAPI create_attribute calls
+- Fixes "missing 1 required positional argument: 'isInheritable'" error
+
 ## [1.1.15] - 2024-12-19
 
 ### Changed
