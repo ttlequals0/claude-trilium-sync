@@ -1,0 +1,60 @@
+version: "3.8"
+
+services:
+  claude-trilium-sync:
+    build: .
+    container_name: claude-trilium-sync
+    restart: unless-stopped
+    environment:
+      # Required: Get from Trilium -> Options -> ETAPI -> Create new token
+      - TRILIUM_TOKEN=${TRILIUM_TOKEN}
+      
+      # Required: Get from claude.ai -> DevTools -> Application -> Cookies -> sessionKey
+      - CLAUDE_SESSION_KEY=${CLAUDE_SESSION_KEY}
+      
+      # Trilium server URL (use container name if running in same compose)
+      - TRILIUM_URL=${TRILIUM_URL:-http://trilium:8080}
+      
+      # Parent note configuration
+      # Set PARENT_NOTE_ID to import under a specific existing note
+      - PARENT_NOTE_ID=${PARENT_NOTE_ID:-}
+      # Or customize the auto-created parent note title
+      - PARENT_NOTE_TITLE=${PARENT_NOTE_TITLE:-Claude Chats}
+      
+      # Sync interval in seconds (default: 1 hour)
+      # Set to 0 for one-shot mode (useful with cron)
+      - SYNC_INTERVAL=${SYNC_INTERVAL:-3600}
+      
+      # Logging level: DEBUG, INFO, WARNING, ERROR
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      
+      # Pushover notifications (optional - for session expiry alerts)
+      - PUSHOVER_USER_KEY=${PUSHOVER_USER_KEY:-}
+      - PUSHOVER_API_TOKEN=${PUSHOVER_API_TOKEN:-}
+      - PUSHOVER_DEVICE=${PUSHOVER_DEVICE:-}
+    volumes:
+      # Persist sync state between container restarts
+      - sync-state:/data
+    networks:
+      - trilium-net
+
+  # Optional: Include Trilium in the same compose
+  # Uncomment if you want to run Trilium alongside the sync
+  # trilium:
+  #   image: triliumnext/notes:latest
+  #   container_name: trilium
+  #   restart: unless-stopped
+  #   ports:
+  #     - "8080:8080"
+  #   volumes:
+  #     - trilium-data:/home/node/trilium-data
+  #   networks:
+  #     - trilium-net
+
+volumes:
+  sync-state:
+  # trilium-data:
+
+networks:
+  trilium-net:
+    driver: bridge
