@@ -265,6 +265,7 @@ class ClaudeAPI:
 
         # Create HTTP client with cookies and browser-like headers
         # Claude's API checks for these headers to detect non-browser requests
+        # Note: Don't set Accept-Encoding - httpx handles compression automatically
         log.info("[HTTP] Creating HTTP client with cookies...")
         self._http_client = httpx.AsyncClient(
             cookies=cookies,
@@ -272,7 +273,6 @@ class ClaudeAPI:
                 "User-Agent": user_agent,
                 "Accept": "application/json, text/plain, */*",
                 "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
                 "Content-Type": "application/json",
                 "Origin": "https://claude.ai",
                 "Referer": "https://claude.ai/",

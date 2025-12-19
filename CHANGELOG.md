@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.11] - 2024-12-19
+
+### Fixed
+- Removed Accept-Encoding header that caused gzip decode errors
+- httpx handles compression automatically; explicit header caused raw bytes to be parsed as JSON
+- Fixes "'utf-8' codec can't decode byte 0x9b" error
+
 ## [1.1.10] - 2024-12-19
 
 ### Fixed
