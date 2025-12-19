@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.13] - 2024-12-19
+
+### Fixed
+- Handle Claude API error responses (type/error/request_id format)
+- Handle potential pagination wrapper in conversations response
+- Better logging for unexpected response formats
+- Skip non-dict items in conversation list instead of crashing
+
 ## [1.1.12] - 2024-12-19
 
 ### Changed

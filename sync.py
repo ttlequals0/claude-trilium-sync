@@ -304,6 +304,15 @@ class ClaudeAPI:
                 log.error(f"[CLAUDE API] <<< Failed to parse response: {body[:200]}...")
                 raise ValueError("Failed to parse API response as JSON")
 
+        # Check for error response
+        if isinstance(result, dict) and "error" in result:
+            error_type = result.get("type", "unknown")
+            error_msg = result.get("error", {})
+            if isinstance(error_msg, dict):
+                error_msg = error_msg.get("message", str(error_msg))
+            log.error(f"[CLAUDE API] <<< API Error ({error_type}): {error_msg}")
+            raise ValueError(f"Claude API error: {error_msg}")
+
         # Log response info
         if isinstance(result, list):
             log.info(f"[CLAUDE API] <<< Response: {len(result)} items returned")
@@ -312,6 +321,9 @@ class ClaudeAPI:
                 if isinstance(first_item, dict):
                     keys = list(first_item.keys())[:5]
                     log.info(f"[CLAUDE API] <<< Item keys: {keys}")
+                else:
+                    log.info(f"[CLAUDE API] <<< First item type: {type(first_item).__name__}")
+                    log.info(f"[CLAUDE API] <<< First item preview: {str(first_item)[:100]}")
         elif isinstance(result, dict):
             keys = list(result.keys())[:10]
             log.info(f"[CLAUDE API] <<< Response: dict with keys: {keys}")
@@ -341,6 +353,20 @@ class ClaudeAPI:
         log.info("[CLAUDE API] Fetching conversations list...")
         org_id = await self._get_org_id()
         result = await self._api_request(f"/organizations/{org_id}/chat_conversations")
+
+        # Handle if result is a dict with a 'conversations' key (pagination wrapper)
+        if isinstance(result, dict):
+            if "conversations" in result:
+                result = result["conversations"]
+                log.info(f"[CLAUDE API] Extracted conversations from wrapper")
+            elif "items" in result:
+                result = result["items"]
+                log.info(f"[CLAUDE API] Extracted items from wrapper")
+
+        if not isinstance(result, list):
+            log.error(f"[CLAUDE API] Expected list but got {type(result).__name__}")
+            return []
+
         log.info(f"[CLAUDE API] Retrieved {len(result)} conversations from Claude")
         return result
 
@@ -366,8 +392,14 @@ class ClaudeAPI:
 
         full_conversations = []
         for i, conv_meta in enumerate(conversations_meta):
+            # Handle if conv_meta is not a dict
+            if not isinstance(conv_meta, dict):
+                log.warning(f"[CLAUDE API] Skipping non-dict item at index {i}: {type(conv_meta).__name__}")
+                continue
+
             conv_id = conv_meta.get("uuid")
             if not conv_id:
+                log.warning(f"[CLAUDE API] Skipping conversation without uuid at index {i}")
                 continue
 
             name = conv_meta.get("name", "Untitled")[:50]
