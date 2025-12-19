@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.12] - 2024-12-19
+
+### Changed
+- Route ALL API requests through FlareSolverr, not just initial cookie fetch
+- Bypasses TLS fingerprinting by using FlareSolverr's real Chrome browser for every request
+- Each API call now goes through FlareSolverr with proper cookie persistence
+
+### Fixed
+- 403 Forbidden on second API request caused by httpx TLS fingerprint detection
+
 ## [1.1.11] - 2024-12-19
 
 ### Fixed

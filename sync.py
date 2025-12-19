@@ -188,46 +188,65 @@ class SyncState:
 
 
 class ClaudeAPI:
-    """HTTP client for Claude.ai API using FlareSolverr for Cloudflare bypass."""
+    """HTTP client for Claude.ai API using FlareSolverr for all requests.
+
+    All API requests go through FlareSolverr's real browser to bypass
+    TLS fingerprinting and other bot detection mechanisms.
+    """
 
     BASE_URL = "https://claude.ai"
 
     def __init__(self, session_key: str):
         self.session_key = session_key
         self._org_id: Optional[str] = None
-        self._http_client: Optional[httpx.AsyncClient] = None
-        self._user_agent: Optional[str] = None
+        self._flaresolverr_url: Optional[str] = None
+        self._cookies: Optional[list] = None
 
-    async def _solve_cloudflare(self) -> tuple[dict, str]:
-        """Use FlareSolverr to solve Cloudflare challenge and get cookies."""
-        log.info("[FLARESOLVERR] Solving Cloudflare challenge...")
+    def _get_flaresolverr_url(self) -> str:
+        """Get normalized FlareSolverr URL."""
+        if self._flaresolverr_url:
+            return self._flaresolverr_url
 
         # Normalize FlareSolverr URL - ensure it ends with /v1
-        flaresolverr_url = CONFIG['flaresolverr_url'].rstrip('/')
-        if not flaresolverr_url.endswith('/v1'):
-            flaresolverr_url = f"{flaresolverr_url}/v1"
+        url = CONFIG['flaresolverr_url'].rstrip('/')
+        if not url.endswith('/v1'):
+            url = f"{url}/v1"
+        self._flaresolverr_url = url
+        return url
 
-        log.info(f"[FLARESOLVERR] >>> POST {flaresolverr_url}")
-        log.info(f"[FLARESOLVERR] >>> Target URL: {self.BASE_URL}/")
-        log.info(f"[FLARESOLVERR] >>> Passing sessionKey cookie to FlareSolverr")
+    async def _flaresolverr_request(self, url: str) -> dict:
+        """Make a request through FlareSolverr's real browser.
+
+        This bypasses TLS fingerprinting by using FlareSolverr's Chrome browser
+        for all requests, not just the initial Cloudflare challenge.
+        """
+        flaresolverr_url = self._get_flaresolverr_url()
+
+        # Build cookies list - always include sessionKey
+        cookies = [{"name": "sessionKey", "value": self.session_key}]
+
+        # Add any cookies from previous requests
+        if self._cookies:
+            for cookie in self._cookies:
+                if cookie.get("name") != "sessionKey":  # Don't duplicate
+                    cookies.append(cookie)
+
+        log.info(f"[FLARESOLVERR] >>> GET {url}")
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 flaresolverr_url,
                 json={
                     "cmd": "request.get",
-                    "url": f"{self.BASE_URL}/",
+                    "url": url,
                     "maxTimeout": 60000,
-                    # Pass sessionKey to FlareSolverr so cf_clearance is generated
-                    # for a logged-in session, not an anonymous one
-                    "cookies": [{"name": "sessionKey", "value": self.session_key}]
+                    "cookies": cookies
                 },
                 timeout=90.0
             )
             data = response.json()
 
         status = data.get("status")
-        log.info(f"[FLARESOLVERR] <<< Status: {status}")
 
         if status != "ok":
             error_msg = data.get("message", "Unknown error")
@@ -235,81 +254,55 @@ class ClaudeAPI:
             raise ValueError(f"FlareSolverr error: {error_msg}")
 
         solution = data["solution"]
-        cookies_list = solution.get("cookies", [])
-        user_agent = solution.get("userAgent", "")
 
-        log.info(f"[FLARESOLVERR] <<< Got {len(cookies_list)} cookies")
-        log.info(f"[FLARESOLVERR] <<< User-Agent: {user_agent[:50]}...")
+        # Store cookies for subsequent requests
+        self._cookies = solution.get("cookies", [])
 
-        # Convert to dict for httpx cookies
-        cookies = {c["name"]: c["value"] for c in cookies_list}
-        cookie_names = list(cookies.keys())
-        log.info(f"[FLARESOLVERR] <<< Cookie names: {cookie_names}")
+        # Get response details
+        response_status = solution.get("status", 0)
+        response_body = solution.get("response", "")
 
-        return cookies, user_agent
+        log.info(f"[FLARESOLVERR] <<< Status: {response_status}")
 
-    async def _init_client(self):
-        """Initialize HTTP client with FlareSolverr cookies."""
-        if self._http_client:
-            log.info("[HTTP] Reusing existing HTTP client")
-            return
-
-        # Get cookies from FlareSolverr
-        log.info("[HTTP] Getting cookies from FlareSolverr...")
-        cookies, user_agent = await self._solve_cloudflare()
-        self._user_agent = user_agent
-
-        # Add sessionKey to cookies
-        cookies["sessionKey"] = self.session_key
-        log.info(f"[HTTP] Added sessionKey cookie (length: {len(self.session_key)} chars)")
-
-        # Create HTTP client with cookies and browser-like headers
-        # Claude's API checks for these headers to detect non-browser requests
-        # Note: Don't set Accept-Encoding - httpx handles compression automatically
-        log.info("[HTTP] Creating HTTP client with cookies...")
-        self._http_client = httpx.AsyncClient(
-            cookies=cookies,
-            headers={
-                "User-Agent": user_agent,
-                "Accept": "application/json, text/plain, */*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Content-Type": "application/json",
-                "Origin": "https://claude.ai",
-                "Referer": "https://claude.ai/",
-                "Sec-Fetch-Dest": "empty",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Site": "same-origin",
-                "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120"',
-                "Sec-Ch-Ua-Mobile": "?0",
-                "Sec-Ch-Ua-Platform": '"Linux"',
-            },
-            timeout=30.0,
-            follow_redirects=True,
-        )
-        log.info(f"[HTTP] HTTP client ready with {len(cookies)} cookies")
+        return {
+            "status": response_status,
+            "body": response_body,
+            "cookies": self._cookies
+        }
 
     async def _api_request(self, endpoint: str) -> dict:
-        """Make an API request using httpx with FlareSolverr cookies."""
-        await self._init_client()
-
+        """Make an API request through FlareSolverr."""
         full_url = f"{self.BASE_URL}/api{endpoint}"
-        log.info(f"[CLAUDE API] >>> GET {full_url}")
 
-        response = await self._http_client.get(full_url)
+        response = await self._flaresolverr_request(full_url)
+        status_code = response.get("status", 0)
+        body = response.get("body", "")
 
-        log.info(f"[CLAUDE API] <<< Status: {response.status_code}")
+        log.info(f"[CLAUDE API] <<< HTTP Status: {status_code}")
 
-        if response.status_code == 403:
+        if status_code == 403:
             log.error("[CLAUDE API] <<< 403 Forbidden - Cloudflare or auth issue")
             raise ValueError(f"HTTP 403: Access denied - check session key or Cloudflare bypass")
 
-        if response.status_code == 401:
+        if status_code == 401:
             log.error("[CLAUDE API] <<< 401 Unauthorized - Session expired")
             raise ValueError("Session expired - please update CLAUDE_SESSION_KEY")
 
-        response.raise_for_status()
+        if status_code >= 400:
+            raise ValueError(f"HTTP {status_code}: Request failed")
 
-        result = response.json()
+        # Parse JSON response from the HTML body
+        # FlareSolverr returns the page content, which for API endpoints is JSON
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            # Try to extract JSON from HTML if wrapped
+            json_match = re.search(r'<pre[^>]*>(.*?)</pre>', body, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(1))
+            else:
+                log.error(f"[CLAUDE API] <<< Failed to parse response: {body[:200]}...")
+                raise ValueError("Failed to parse API response as JSON")
 
         # Log response info
         if isinstance(result, list):
@@ -391,11 +384,9 @@ class ClaudeAPI:
         return full_conversations
 
     async def close(self):
-        """Close HTTP client and cleanup."""
-        if self._http_client:
-            await self._http_client.aclose()
-            self._http_client = None
+        """Cleanup resources."""
         self._org_id = None
+        self._cookies = None
 
 
 class TriliumSync:
