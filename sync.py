@@ -200,25 +200,25 @@ class ClaudeAPI:
     async def _init_browser(self):
         """Initialize Playwright browser with session cookie."""
         if self.browser:
-            log.debug("Browser already initialized, reusing existing instance")
+            log.info("[BROWSER] Reusing existing browser instance")
             return
 
-        log.debug("Initializing Playwright browser...")
-        log.debug("Starting Playwright...")
+        log.info("[BROWSER] Initializing Playwright browser...")
         self.playwright = await async_playwright().start()
-        log.debug("Playwright started, launching Chromium...")
+        log.info("[BROWSER] Playwright started, launching Chromium (headless)...")
         self.browser = await self.playwright.chromium.launch(
             headless=True,
             args=['--no-sandbox', '--disable-dev-shm-usage']
         )
-        log.debug("Chromium launched, creating browser context...")
-        self.context = await self.browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        log.debug("Browser context created")
+        log.info("[BROWSER] Chromium launched successfully")
+
+        user_agent = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        log.info(f"[BROWSER] Creating context with User-Agent: {user_agent[:50]}...")
+        self.context = await self.browser.new_context(user_agent=user_agent)
 
         # Set the session cookie
-        log.debug(f"Injecting sessionKey cookie (length: {len(self.session_key)} chars)...")
+        log.info(f"[BROWSER] Injecting sessionKey cookie (length: {len(self.session_key)} chars)")
+        log.info(f"[BROWSER] Cookie domain: .claude.ai, path: /, httpOnly: True, secure: True")
         await self.context.add_cookies([{
             'name': 'sessionKey',
             'value': self.session_key,
@@ -227,23 +227,25 @@ class ClaudeAPI:
             'httpOnly': True,
             'secure': True,
         }])
-        log.debug("Session cookie injected")
+        log.info("[BROWSER] Session cookie injected successfully")
 
-        log.debug("Creating new page...")
         self.page = await self.context.new_page()
-        log.debug("Browser initialized successfully")
+        log.info("[BROWSER] Browser page created and ready")
 
     async def _api_request(self, endpoint: str) -> dict:
         """Make an API request from within the browser context."""
         await self._init_browser()
 
-        log.debug(f"API request: GET {self.API_BASE_URL}/api{endpoint}")
+        full_url = f"{self.API_BASE_URL}/api{endpoint}"
+        log.info(f"[CLAUDE API] >>> GET {full_url}")
+        log.info(f"[CLAUDE API] >>> Headers: Accept=application/json, Content-Type=application/json")
+        log.info(f"[CLAUDE API] >>> Credentials: include (cookies will be sent)")
 
         # Use page.evaluate to make fetch request from browser context
         # This inherits all cookies and browser security context
         result = await self.page.evaluate(f"""
             async () => {{
-                const response = await fetch('{self.API_BASE_URL}/api{endpoint}', {{
+                const response = await fetch('{full_url}', {{
                     method: 'GET',
                     credentials: 'include',
                     headers: {{
@@ -260,58 +262,71 @@ class ClaudeAPI:
 
         # Log response info
         if isinstance(result, list):
-            log.debug(f"API response: {len(result)} items")
+            log.info(f"[CLAUDE API] <<< Response: 200 OK, {len(result)} items returned")
+            if result and len(result) > 0:
+                first_item = result[0]
+                if isinstance(first_item, dict):
+                    keys = list(first_item.keys())[:5]
+                    log.info(f"[CLAUDE API] <<< Item keys: {keys}")
         elif isinstance(result, dict):
-            log.debug(f"API response: {len(result)} keys")
+            keys = list(result.keys())[:10]
+            log.info(f"[CLAUDE API] <<< Response: 200 OK, dict with keys: {keys}")
         else:
-            log.debug(f"API response received")
+            log.info(f"[CLAUDE API] <<< Response: 200 OK")
 
         return result
 
     async def _get_org_id(self) -> str:
         """Get the organization ID for the authenticated user."""
         if self._org_id:
-            log.debug(f"Using cached organization ID: {self._org_id}")
+            log.info(f"[CLAUDE API] Using cached organization ID: {self._org_id}")
             return self._org_id
 
-        log.debug("Fetching organization ID...")
+        log.info("[CLAUDE API] Fetching organization ID...")
 
         # First navigate to Claude to establish the session
         await self._init_browser()
 
-        log.debug(f"Navigating to {self.BASE_URL}/...")
+        log.info(f"[BROWSER] Navigating to {self.BASE_URL}/ ...")
+        log.info(f"[BROWSER] Wait condition: domcontentloaded, timeout: 60000ms")
         await self.page.goto(
             f"{self.BASE_URL}/",
             wait_until="domcontentloaded",
             timeout=60000
         )
-        log.debug(f"Navigation complete, current URL: {self.page.url}")
+        log.info(f"[BROWSER] Navigation complete!")
+        log.info(f"[BROWSER] Current URL: {self.page.url}")
 
         # Wait for page to stabilize after initial load
-        log.debug("Waiting for page to stabilize...")
+        log.info("[BROWSER] Waiting 2s for page to stabilize...")
         await asyncio.sleep(2)
 
         # Check if we're on a login page (session expired)
         current_url = self.page.url
-        log.debug(f"Checking URL for login redirect: {current_url}")
+        log.info(f"[BROWSER] Final URL after stabilization: {current_url}")
         if "login" in current_url or "auth" in current_url:
+            log.error("[BROWSER] DETECTED LOGIN REDIRECT - Session appears to be expired!")
             raise ValueError("Session expired - redirected to login page")
 
-        log.debug("Making API request for /organizations...")
+        log.info("[BROWSER] No login redirect detected, session appears valid")
+        log.info("[CLAUDE API] Fetching organizations list...")
         orgs = await self._api_request("/organizations")
-        log.debug(f"Got {len(orgs)} organization(s)")
 
         if not orgs:
+            log.error("[CLAUDE API] No organizations returned!")
             raise ValueError("No organizations found for this account")
 
         self._org_id = orgs[0]["uuid"]
-        log.debug(f"Using organization: {self._org_id}")
+        org_name = orgs[0].get("name", "Unknown")
+        log.info(f"[CLAUDE API] Using organization: {org_name} (ID: {self._org_id})")
         return self._org_id
 
     async def get_conversations_list(self) -> list[dict]:
         """Get list of all conversations with metadata."""
+        log.info("[CLAUDE API] Fetching conversations list...")
         org_id = await self._get_org_id()
         result = await self._api_request(f"/organizations/{org_id}/chat_conversations")
+        log.info(f"[CLAUDE API] Retrieved {len(result)} conversations from Claude")
         return result
 
     async def get_conversation(self, conv_id: str) -> Optional[dict]:
@@ -321,15 +336,18 @@ class ClaudeAPI:
             result = await self._api_request(
                 f"/organizations/{org_id}/chat_conversations/{conv_id}"
             )
+            msg_count = len(result.get("chat_messages", []))
+            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages")
             return result
         except Exception as e:
-            log.warning(f"Failed to fetch conversation {conv_id}: {e}")
+            log.warning(f"[CLAUDE API] Failed to fetch conversation {conv_id}: {e}")
             return None
 
     async def get_all_conversations_full(self) -> list[dict]:
         """Get all conversations with full message content."""
+        log.info("[CLAUDE API] Starting to fetch all conversations with full content...")
         conversations_meta = await self.get_conversations_list()
-        log.info(f"Found {len(conversations_meta)} conversations")
+        log.info(f"[CLAUDE API] Found {len(conversations_meta)} conversations to fetch")
 
         full_conversations = []
         for i, conv_meta in enumerate(conversations_meta):
@@ -338,7 +356,7 @@ class ClaudeAPI:
                 continue
 
             name = conv_meta.get("name", "Untitled")[:50]
-            log.debug(f"Fetching {i+1}/{len(conversations_meta)}: {name}")
+            log.info(f"[CLAUDE API] Fetching [{i+1}/{len(conversations_meta)}]: {name}")
 
             conv = await self.get_conversation(conv_id)
             if conv:
@@ -347,6 +365,7 @@ class ClaudeAPI:
             # Small delay to be nice to the API
             await asyncio.sleep(0.3)
 
+        log.info(f"[CLAUDE API] Successfully fetched {len(full_conversations)} full conversations")
         return full_conversations
 
     async def close(self):
@@ -372,37 +391,47 @@ class TriliumSync:
         parent_note_title: str = "Claude Chats",
         parent_label: str = "claudeChatsRoot",
     ):
+        log.info(f"[TRILIUM] Initializing connection to {trilium_url}")
+        log.info(f"[TRILIUM] Token length: {len(token)} chars")
+        self.trilium_url = trilium_url
         self.ea = ETAPI(trilium_url, token)
         self.parent_note_id = parent_note_id
         self.parent_note_title = parent_note_title
         self.parent_label = parent_label
         self._resolved_parent_id: Optional[str] = None
+        log.info(f"[TRILIUM] Parent note ID: {parent_note_id or '(auto-create)'}")
+        log.info(f"[TRILIUM] Parent note title: {parent_note_title}")
 
     def _get_or_create_parent_note(self) -> str:
         """Get or create the parent note for Claude chats."""
         if self._resolved_parent_id:
+            log.info(f"[TRILIUM] Using cached parent note ID: {self._resolved_parent_id}")
             return self._resolved_parent_id
 
         if self.parent_note_id:
+            log.info(f"[TRILIUM] >>> GET note {self.parent_note_id}")
             try:
                 note = self.ea.get_note(self.parent_note_id)
                 if note:
                     self._resolved_parent_id = self.parent_note_id
-                    log.info(f"Using specified parent note: {note.get('title', self.parent_note_id)}")
+                    log.info(f"[TRILIUM] <<< Found specified parent note: {note.get('title', self.parent_note_id)}")
                     return self._resolved_parent_id
             except Exception as e:
-                log.warning(f"Specified parent note {self.parent_note_id} not found: {e}")
-                log.warning("Falling back to auto-create behavior")
+                log.warning(f"[TRILIUM] <<< Specified parent note {self.parent_note_id} not found: {e}")
+                log.warning("[TRILIUM] Falling back to auto-create behavior")
 
+        log.info(f"[TRILIUM] >>> SEARCH for #{self.parent_label}")
         try:
             results = self.ea.search_note(search=f"#{self.parent_label}")
             if results and results.get("results"):
                 self._resolved_parent_id = results["results"][0]["noteId"]
-                log.debug(f"Found existing parent note: {self._resolved_parent_id}")
+                log.info(f"[TRILIUM] <<< Found existing parent note: {self._resolved_parent_id}")
                 return self._resolved_parent_id
+            log.info("[TRILIUM] <<< No existing parent note found")
         except Exception as e:
-            log.debug(f"Search failed, will create new parent: {e}")
+            log.info(f"[TRILIUM] <<< Search failed, will create new parent: {e}")
 
+        log.info(f"[TRILIUM] >>> CREATE note '{self.parent_note_title}' under root")
         try:
             result = self.ea.create_note(
                 parentNoteId="root",
@@ -413,10 +442,12 @@ class TriliumSync:
             if not result or "note" not in result or "noteId" not in result["note"]:
                 raise ValueError(f"Invalid response from create_note: {result}")
             self._resolved_parent_id = result["note"]["noteId"]
+            log.info(f"[TRILIUM] <<< Created note with ID: {self._resolved_parent_id}")
         except Exception as e:
-            log.error(f"Failed to create parent note '{self.parent_note_title}': {e}")
+            log.error(f"[TRILIUM] <<< Failed to create parent note '{self.parent_note_title}': {e}")
             raise RuntimeError(f"Cannot create parent note: {e}") from e
 
+        log.info(f"[TRILIUM] >>> CREATE attribute #{self.parent_label} on {self._resolved_parent_id}")
         try:
             self.ea.create_attribute(
                 noteId=self._resolved_parent_id,
@@ -424,10 +455,11 @@ class TriliumSync:
                 name=self.parent_label,
                 value="",
             )
+            log.info("[TRILIUM] <<< Attribute created successfully")
         except Exception as e:
-            log.warning(f"Failed to add label to parent note: {e}")
+            log.warning(f"[TRILIUM] <<< Failed to add label to parent note: {e}")
 
-        log.info(f"Created parent note '{self.parent_note_title}': {self._resolved_parent_id}")
+        log.info(f"[TRILIUM] Parent note ready: '{self.parent_note_title}' ({self._resolved_parent_id})")
         return self._resolved_parent_id
 
     def _escape_html(self, text: str) -> str:
@@ -540,17 +572,26 @@ class TriliumSync:
         content = self._format_conversation(conv)
         conv_id = conv.get("uuid", "")
         updated_at = conv.get("updated_at", "")
+        msg_count = len(conv.get("chat_messages", []))
+
+        log.info(f"[TRILIUM] Syncing conversation: {title[:50]}")
+        log.info(f"[TRILIUM]   - Conversation ID: {conv_id}")
+        log.info(f"[TRILIUM]   - Messages: {msg_count}")
+        log.info(f"[TRILIUM]   - Content length: {len(content)} chars")
 
         if existing_note_id:
+            log.info(f"[TRILIUM] >>> PATCH note {existing_note_id} (update existing)")
             try:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
                 self.ea.patch_note_content(noteId=existing_note_id, content=content)
-                log.info(f"Updated: {title[:60]}")
+                log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
                 return existing_note_id
             except Exception as e:
-                log.warning(f"Failed to update note {existing_note_id}, creating new: {e}")
+                log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
+                log.warning("[TRILIUM] Will create new note instead")
 
         parent_id = self._get_or_create_parent_note()
+        log.info(f"[TRILIUM] >>> CREATE note '{title[:50]}' under {parent_id}")
         result = self.ea.create_note(
             parentNoteId=parent_id,
             title=title,
@@ -558,7 +599,9 @@ class TriliumSync:
             content=content,
         )
         note_id = result["note"]["noteId"]
+        log.info(f"[TRILIUM] <<< Created note: {note_id}")
 
+        log.info(f"[TRILIUM] >>> CREATE attributes on {note_id}")
         self.ea.create_attribute(
             noteId=note_id,
             type="label",
@@ -577,8 +620,9 @@ class TriliumSync:
             name="claudeChat",
             value="",
         )
+        log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
-        log.info(f"Created: {title[:60]}")
+        log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id
 
 
@@ -600,8 +644,19 @@ def compute_content_hash(conv: dict) -> str:
 
 async def run_sync():
     """Run a single sync cycle."""
+    log.info("=" * 60)
+    log.info("[SYNC] Starting sync cycle")
+    log.info("=" * 60)
+
+    log.info(f"[SYNC] State file: {CONFIG['state_file']}")
     state = SyncState(CONFIG["state_file"])
+    log.info(f"[SYNC] Last sync: {state.data.get('last_sync', 'Never')}")
+    log.info(f"[SYNC] Known conversations in state: {len(state.data.get('conversations', {}))}")
+
+    log.info("[SYNC] Initializing Claude API client...")
+    log.info(f"[SYNC] Session key length: {len(CONFIG['claude_session_key'])} chars")
     claude = ClaudeAPI(CONFIG["claude_session_key"])
+
     trilium = TriliumSync(
         CONFIG["trilium_url"],
         CONFIG["trilium_token"],
@@ -610,80 +665,123 @@ async def run_sync():
         parent_label=CONFIG["parent_note_label"],
     )
 
-    log.info(f"Starting sync (last: {state.data.get('last_sync', 'Never')})")
+    log.info("-" * 60)
+    log.info("[SYNC] Phase 1: Fetching conversations from Claude.ai")
+    log.info("-" * 60)
 
     try:
         conversations = await claude.get_all_conversations_full()
     except Exception as e:
         error_msg = str(e)
+        log.error(f"[SYNC] FAILED to fetch conversations: {error_msg}")
         if "401" in error_msg or "session expired" in error_msg.lower() or "login" in error_msg.lower():
-            log.error("Authentication failed. Check your CLAUDE_SESSION_KEY.")
+            log.error("[SYNC] Authentication failed. Check your CLAUDE_SESSION_KEY.")
             notifier.notify_session_expired()
         else:
-            log.error(f"API error: {e}")
+            log.error(f"[SYNC] API error: {e}")
             notifier.notify_error(error_msg)
         return
     finally:
+        log.info("[SYNC] Closing browser...")
         await claude.close()
+        log.info("[SYNC] Browser closed")
 
     if not conversations:
-        log.warning("No conversations found")
+        log.warning("[SYNC] No conversations found - nothing to sync")
         return
+
+    log.info("-" * 60)
+    log.info("[SYNC] Phase 2: Syncing to Trilium Notes")
+    log.info("-" * 60)
+    log.info(f"[SYNC] Processing {len(conversations)} conversations...")
 
     synced = 0
     skipped = 0
     errors = 0
 
-    for conv in conversations:
+    for i, conv in enumerate(conversations):
         conv_id = conv.get("uuid", "")
+        conv_name = conv.get("name", "Untitled")[:40]
         if not conv_id:
             continue
 
         content_hash = compute_content_hash(conv)
         existing_hash = state.get_conversation_hash(conv_id)
 
+        log.info(f"[SYNC] [{i+1}/{len(conversations)}] {conv_name}")
+        log.info(f"[SYNC]   Hash: {content_hash} (existing: {existing_hash or 'none'})")
+
         if existing_hash == content_hash:
+            log.info(f"[SYNC]   -> SKIPPED (unchanged)")
             skipped += 1
             continue
 
         try:
             existing_note_id = state.get_trilium_note_id(conv_id)
+            if existing_note_id:
+                log.info(f"[SYNC]   -> UPDATING existing note {existing_note_id}")
+            else:
+                log.info(f"[SYNC]   -> CREATING new note")
+
             note_id = trilium.sync_conversation(conv, existing_note_id)
             state.update_conversation(conv_id, content_hash, note_id)
+            log.info(f"[SYNC]   -> SUCCESS (note: {note_id})")
             synced += 1
         except Exception as e:
-            log.error(f"Failed to sync {conv.get('name', conv_id)[:30]}: {e}")
+            log.error(f"[SYNC]   -> FAILED: {e}")
             errors += 1
 
-    log.info(f"Sync complete: {synced} synced, {skipped} unchanged, {errors} errors")
+    log.info("=" * 60)
+    log.info(f"[SYNC] Sync complete!")
+    log.info(f"[SYNC]   Synced: {synced}")
+    log.info(f"[SYNC]   Skipped (unchanged): {skipped}")
+    log.info(f"[SYNC]   Errors: {errors}")
+    log.info("=" * 60)
 
 
 async def async_main():
     """Async main entry point."""
-    log.info(f"Claude-Trilium Sync v{get_version()} starting")
+    log.info("=" * 60)
+    log.info(f"Claude-Trilium Sync v{get_version()}")
+    log.info("=" * 60)
+
+    log.info("[CONFIG] Configuration:")
+    log.info(f"[CONFIG]   TRILIUM_URL: {CONFIG['trilium_url']}")
+    log.info(f"[CONFIG]   TRILIUM_TOKEN: {'*' * 8}... ({len(CONFIG['trilium_token'])} chars)")
+    log.info(f"[CONFIG]   CLAUDE_SESSION_KEY: {'*' * 8}... ({len(CONFIG['claude_session_key'])} chars)")
+    log.info(f"[CONFIG]   STATE_FILE: {CONFIG['state_file']}")
+    log.info(f"[CONFIG]   SYNC_INTERVAL: {CONFIG['sync_interval']}s")
+    log.info(f"[CONFIG]   LOG_LEVEL: {CONFIG['log_level']}")
+    log.info(f"[CONFIG]   PARENT_NOTE_ID: {CONFIG['parent_note_id'] or '(auto)'}")
+    log.info(f"[CONFIG]   PARENT_NOTE_TITLE: {CONFIG['parent_note_title']}")
+    if CONFIG['pushover_user_key']:
+        log.info(f"[CONFIG]   PUSHOVER: Enabled")
+    else:
+        log.info(f"[CONFIG]   PUSHOVER: Disabled")
 
     if not CONFIG["trilium_token"]:
-        log.error("TRILIUM_TOKEN not set")
-        log.error("Get token from Trilium: Options -> ETAPI -> Create new token")
+        log.error("[CONFIG] TRILIUM_TOKEN not set!")
+        log.error("[CONFIG] Get token from Trilium: Options -> ETAPI -> Create new token")
         sys.exit(1)
 
     if not CONFIG["claude_session_key"]:
-        log.error("CLAUDE_SESSION_KEY not set")
-        log.error("Get from Claude.ai: DevTools -> Application -> Cookies -> sessionKey")
+        log.error("[CONFIG] CLAUDE_SESSION_KEY not set!")
+        log.error("[CONFIG] Get from Claude.ai: DevTools -> Application -> Cookies -> sessionKey")
         sys.exit(1)
 
     interval = CONFIG["sync_interval"]
 
     if interval <= 0:
+        log.info("[MODE] Running in one-shot mode")
         await run_sync()
     else:
-        log.info(f"Running in continuous mode, interval: {interval}s")
+        log.info(f"[MODE] Running in continuous mode, interval: {interval}s")
         while True:
             try:
                 await run_sync()
             except Exception as e:
-                log.exception(f"Sync failed: {e}")
-            log.info(f"Sleeping {interval}s until next sync...")
+                log.exception(f"[SYNC] Sync failed with exception: {e}")
+            log.info(f"[MODE] Sleeping {interval}s until next sync...")
             await asyncio.sleep(interval)
 
 

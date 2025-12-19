@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.3] - 2024-12-19
+
+### Added
+- Comprehensive verbose logging throughout all operations
+- Tagged log messages: [BROWSER], [CLAUDE API], [TRILIUM], [SYNC], [CONFIG], [MODE]
+- Request/response logging for all API calls (>>> for requests, <<< for responses)
+- Progress tracking for conversation fetching and syncing
+- Configuration dump at startup showing all settings
+- Phase markers for sync cycle (Phase 1: Fetch, Phase 2: Sync)
+- Detailed hash comparison logging for change detection
+
 ## [1.1.2] - 2024-12-19
 
 ### Fixed
