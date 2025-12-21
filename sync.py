@@ -3,7 +3,7 @@
 Claude Chat to Trilium Notes Sync
 
 Automatically syncs Claude.ai conversations to Trilium Notes.
-- Uses direct HTTP API calls (no browser needed)
+- Uses Playwright browser automation to access Claude API
 - Tracks sync state to only process new/updated chats
 - Merges updates into existing Trilium notes
 
@@ -14,16 +14,18 @@ Environment Variables:
     STATE_FILE: Path to sync state file (default: /data/state.json)
     SYNC_INTERVAL: Seconds between syncs, 0 for one-shot (default: 0)
     LOG_LEVEL: Logging level (default: INFO)
-    
+
     PARENT_NOTE_ID: Trilium note ID to use as parent (optional)
     PARENT_NOTE_TITLE: Title for auto-created parent note (default: Claude Chats)
-    
+
     PUSHOVER_USER_KEY: Pushover user key for notifications (optional)
     PUSHOVER_API_TOKEN: Pushover application token (optional)
     PUSHOVER_DEVICE: Specific device to notify (optional)
+
+    FLARESOLVERR_URL: FlareSolverr endpoint for Cloudflare bypass (default: http://flaresolverr:8191/v1)
 """
 
-import functools
+import asyncio
 import hashlib
 import json
 import logging
@@ -38,6 +40,8 @@ from typing import Optional
 import httpx
 from trilium_py.client import ETAPI
 
+from version import get_version
+
 # Configuration from environment
 CONFIG = {
     "trilium_url": os.environ.get("TRILIUM_URL", "http://localhost:8080"),
@@ -46,16 +50,19 @@ CONFIG = {
     "state_file": os.environ.get("STATE_FILE", "/data/state.json"),
     "sync_interval": int(os.environ.get("SYNC_INTERVAL", "0")),
     "log_level": os.environ.get("LOG_LEVEL", "INFO"),
-    
+
     # Parent note configuration
-    "parent_note_id": os.environ.get("PARENT_NOTE_ID", ""),  # Specific note ID
+    "parent_note_id": os.environ.get("PARENT_NOTE_ID", ""),
     "parent_note_title": os.environ.get("PARENT_NOTE_TITLE", "Claude Chats"),
     "parent_note_label": "claudeChatsRoot",
-    
+
     # Pushover notifications
     "pushover_user_key": os.environ.get("PUSHOVER_USER_KEY", ""),
     "pushover_api_token": os.environ.get("PUSHOVER_API_TOKEN", ""),
     "pushover_device": os.environ.get("PUSHOVER_DEVICE", ""),
+
+    # FlareSolverr for Cloudflare bypass
+    "flaresolverr_url": os.environ.get("FLARESOLVERR_URL", "http://flaresolverr:8191/v1"),
 }
 
 # Setup logging
@@ -68,18 +75,18 @@ log = logging.getLogger(__name__)
 
 class PushoverNotifier:
     """Send notifications via Pushover."""
-    
+
     API_URL = "https://api.pushover.net/1/messages.json"
-    
+
     def __init__(self, user_key: str, api_token: str, device: str = ""):
         self.user_key = user_key
         self.api_token = api_token
         self.device = device
         self.enabled = bool(user_key and api_token)
-        
+
         if not self.enabled:
             log.debug("Pushover notifications disabled (no credentials)")
-    
+
     def send(
         self,
         message: str,
@@ -88,19 +95,10 @@ class PushoverNotifier:
         url: str = "",
         url_title: str = "",
     ) -> bool:
-        """
-        Send a Pushover notification.
-        
-        Priority levels:
-            -2: Lowest (no notification)
-            -1: Low (quiet)
-             0: Normal
-             1: High (bypass quiet hours)
-             2: Emergency (requires acknowledgment)
-        """
+        """Send a Pushover notification."""
         if not self.enabled:
             return False
-        
+
         payload = {
             "token": self.api_token,
             "user": self.user_key,
@@ -108,14 +106,14 @@ class PushoverNotifier:
             "title": title,
             "priority": priority,
         }
-        
+
         if self.device:
             payload["device"] = self.device
         if url:
             payload["url"] = url
             if url_title:
                 payload["url_title"] = url_title
-        
+
         try:
             resp = httpx.post(self.API_URL, data=payload, timeout=10.0)
             resp.raise_for_status()
@@ -124,22 +122,22 @@ class PushoverNotifier:
         except Exception as e:
             log.warning(f"Failed to send Pushover notification: {e}")
             return False
-    
+
     def notify_session_expired(self):
         """Send a session expired notification."""
         return self.send(
             message="Claude session key has expired. Update CLAUDE_SESSION_KEY to resume syncing.",
-            title="⚠️ Claude Session Expired",
-            priority=1,  # High priority to bypass quiet hours
+            title="Claude Session Expired",
+            priority=1,
             url="https://claude.ai",
             url_title="Open Claude to get new session key",
         )
-    
+
     def notify_error(self, error: str):
         """Send a generic error notification."""
         return self.send(
             message=f"Sync error: {error}",
-            title="❌ Claude-Trilium Sync Error",
+            title="Claude-Trilium Sync Error",
             priority=0,
         )
 
@@ -150,34 +148,6 @@ notifier = PushoverNotifier(
     CONFIG["pushover_api_token"],
     CONFIG["pushover_device"],
 )
-
-
-def retry_on_failure(max_retries: int = 3, delay: float = 1.0):
-    """Decorator for retrying failed API calls with exponential backoff."""
-    def decorator(func):
-        @functools.wraps(func)
-        def wrapper(*args, **kwargs):
-            last_error = None
-            for attempt in range(max_retries):
-                try:
-                    return func(*args, **kwargs)
-                except httpx.HTTPStatusError as e:
-                    if e.response.status_code in (401, 403, 404):
-                        raise  # Don't retry auth/not found errors
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        sleep_time = delay * (attempt + 1)
-                        log.warning(f"Retry {attempt + 1}/{max_retries} after {sleep_time}s: {e}")
-                        time.sleep(sleep_time)
-                except (httpx.TimeoutException, httpx.ConnectError) as e:
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        sleep_time = delay * (attempt + 1)
-                        log.warning(f"Retry {attempt + 1}/{max_retries} after {sleep_time}s: {e}")
-                        time.sleep(sleep_time)
-            raise last_error
-        return wrapper
-    return decorator
 
 
 class SyncState:
@@ -199,7 +169,7 @@ class SyncState:
         temp_file = self.state_file.with_suffix(".tmp")
         with open(temp_file, "w") as f:
             json.dump(self.data, f, indent=2, default=str)
-        temp_file.replace(self.state_file)  # Atomic rename on POSIX systems
+        temp_file.replace(self.state_file)
 
     def get_conversation_hash(self, conv_id: str) -> Optional[str]:
         return self.data["conversations"].get(conv_id, {}).get("content_hash")
@@ -218,95 +188,256 @@ class SyncState:
 
 
 class ClaudeAPI:
-    """Direct HTTP client for Claude.ai API."""
+    """HTTP client for Claude.ai API using FlareSolverr for all requests.
 
-    BASE_URL = "https://claude.ai/api"
+    All API requests go through FlareSolverr's real browser to bypass
+    TLS fingerprinting and other bot detection mechanisms.
+    """
+
+    BASE_URL = "https://claude.ai"
 
     def __init__(self, session_key: str):
         self.session_key = session_key
-        self.client = httpx.Client(
-            timeout=30.0,
-            headers={
-                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-                "Accept": "application/json",
-                "Content-Type": "application/json",
-            },
-            cookies={"sessionKey": session_key},
-        )
         self._org_id: Optional[str] = None
+        self._flaresolverr_url: Optional[str] = None
+        self._cookies: Optional[list] = None
 
-    def _get_org_id(self) -> str:
+    def _get_flaresolverr_url(self) -> str:
+        """Get normalized FlareSolverr URL."""
+        if self._flaresolverr_url:
+            return self._flaresolverr_url
+
+        # Normalize FlareSolverr URL - ensure it ends with /v1
+        url = CONFIG['flaresolverr_url'].rstrip('/')
+        if not url.endswith('/v1'):
+            url = f"{url}/v1"
+        self._flaresolverr_url = url
+        return url
+
+    async def _flaresolverr_request(self, url: str) -> dict:
+        """Make a request through FlareSolverr's real browser.
+
+        This bypasses TLS fingerprinting by using FlareSolverr's Chrome browser
+        for all requests, not just the initial Cloudflare challenge.
+        """
+        flaresolverr_url = self._get_flaresolverr_url()
+
+        # Build cookies list - always include sessionKey
+        cookies = [{"name": "sessionKey", "value": self.session_key}]
+
+        # Add any cookies from previous requests
+        if self._cookies:
+            for cookie in self._cookies:
+                if cookie.get("name") != "sessionKey":  # Don't duplicate
+                    cookies.append(cookie)
+
+        log.info(f"[FLARESOLVERR] >>> GET {url}")
+
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                flaresolverr_url,
+                json={
+                    "cmd": "request.get",
+                    "url": url,
+                    "maxTimeout": 60000,
+                    "cookies": cookies
+                },
+                timeout=90.0
+            )
+            data = response.json()
+
+        status = data.get("status")
+
+        if status != "ok":
+            error_msg = data.get("message", "Unknown error")
+            log.error(f"[FLARESOLVERR] <<< Error: {error_msg}")
+            raise ValueError(f"FlareSolverr error: {error_msg}")
+
+        solution = data["solution"]
+
+        # Store cookies for subsequent requests
+        self._cookies = solution.get("cookies", [])
+
+        # Get response details
+        response_status = solution.get("status", 0)
+        response_body = solution.get("response", "")
+
+        log.info(f"[FLARESOLVERR] <<< Status: {response_status}")
+
+        return {
+            "status": response_status,
+            "body": response_body,
+            "cookies": self._cookies
+        }
+
+    async def _api_request(self, endpoint: str) -> dict:
+        """Make an API request through FlareSolverr."""
+        full_url = f"{self.BASE_URL}/api{endpoint}"
+
+        response = await self._flaresolverr_request(full_url)
+        status_code = response.get("status", 0)
+        body = response.get("body", "")
+
+        log.info(f"[CLAUDE API] <<< HTTP Status: {status_code}")
+
+        if status_code == 403:
+            log.error("[CLAUDE API] <<< 403 Forbidden - Cloudflare or auth issue")
+            raise ValueError(f"HTTP 403: Access denied - check session key or Cloudflare bypass")
+
+        if status_code == 401:
+            log.error("[CLAUDE API] <<< 401 Unauthorized - Session expired")
+            raise ValueError("Session expired - please update CLAUDE_SESSION_KEY")
+
+        if status_code >= 400:
+            raise ValueError(f"HTTP {status_code}: Request failed")
+
+        # Parse JSON response from the HTML body
+        # FlareSolverr returns the page content, which for API endpoints is JSON
+        try:
+            result = json.loads(body)
+        except json.JSONDecodeError:
+            # Try to extract JSON from HTML if wrapped
+            json_match = re.search(r'<pre[^>]*>(.*?)</pre>', body, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(1))
+            else:
+                log.error(f"[CLAUDE API] <<< Failed to parse response: {body[:200]}...")
+                raise ValueError("Failed to parse API response as JSON")
+
+        # Check for error response
+        if isinstance(result, dict) and "error" in result:
+            error_type = result.get("type", "unknown")
+            error_msg = result.get("error", {})
+            if isinstance(error_msg, dict):
+                error_msg = error_msg.get("message", str(error_msg))
+            log.error(f"[CLAUDE API] <<< API Error ({error_type}): {error_msg}")
+            raise ValueError(f"Claude API error: {error_msg}")
+
+        # Log response info
+        if isinstance(result, list):
+            log.info(f"[CLAUDE API] <<< Response: {len(result)} items returned")
+            if result and len(result) > 0:
+                first_item = result[0]
+                if isinstance(first_item, dict):
+                    keys = list(first_item.keys())[:5]
+                    log.info(f"[CLAUDE API] <<< Item keys: {keys}")
+                else:
+                    log.info(f"[CLAUDE API] <<< First item type: {type(first_item).__name__}")
+                    log.info(f"[CLAUDE API] <<< First item preview: {str(first_item)[:100]}")
+        elif isinstance(result, dict):
+            keys = list(result.keys())[:10]
+            log.info(f"[CLAUDE API] <<< Response: dict with keys: {keys}")
+
+        return result
+
+    async def _get_org_id(self) -> str:
         """Get the organization ID for the authenticated user."""
         if self._org_id:
+            log.info(f"[CLAUDE API] Using cached organization ID: {self._org_id}")
             return self._org_id
 
-        resp = self.client.get(f"{self.BASE_URL}/organizations")
-        resp.raise_for_status()
-        orgs = resp.json()
+        log.info("[CLAUDE API] Fetching organization ID...")
+        orgs = await self._api_request("/organizations")
 
         if not orgs:
+            log.error("[CLAUDE API] No organizations returned!")
             raise ValueError("No organizations found for this account")
 
-        self._org_id = orgs[0]["uuid"]
-        log.debug(f"Using organization: {self._org_id}")
+        # Log all available organizations
+        log.info(f"[CLAUDE API] Found {len(orgs)} organizations:")
+        for i, org in enumerate(orgs):
+            org_name = org.get("name", "Unknown")
+            org_id = org.get("uuid", "Unknown")
+            caps = org.get("capabilities", [])
+            log.info(f"[CLAUDE API]   [{i}] {org_name} (ID: {org_id})")
+            log.info(f"[CLAUDE API]       Capabilities: {caps[:5]}...")
+
+        # Try to find an org with chat capabilities, otherwise use first
+        # Prefer orgs that are NOT "Individual Org" as those may have restrictions
+        selected_org = orgs[0]
+        for org in orgs:
+            org_name = org.get("name", "")
+            # Skip individual orgs if we have other options
+            if "Individual" not in org_name and len(orgs) > 1:
+                selected_org = org
+                break
+
+        self._org_id = selected_org["uuid"]
+        org_name = selected_org.get("name", "Unknown")
+        log.info(f"[CLAUDE API] Selected organization: {org_name} (ID: {self._org_id})")
         return self._org_id
 
-    @retry_on_failure(max_retries=3, delay=1.0)
-    def get_conversations_list(self) -> list[dict]:
+    async def get_conversations_list(self) -> list[dict]:
         """Get list of all conversations with metadata."""
-        org_id = self._get_org_id()
-        resp = self.client.get(
-            f"{self.BASE_URL}/organizations/{org_id}/chat_conversations"
-        )
-        resp.raise_for_status()
-        return resp.json()
+        log.info("[CLAUDE API] Fetching conversations list...")
+        org_id = await self._get_org_id()
+        result = await self._api_request(f"/organizations/{org_id}/chat_conversations")
 
-    @retry_on_failure(max_retries=3, delay=1.0)
-    def _fetch_conversation(self, conv_id: str) -> dict:
-        """Fetch a single conversation (internal, with retry)."""
-        org_id = self._get_org_id()
-        resp = self.client.get(
-            f"{self.BASE_URL}/organizations/{org_id}/chat_conversations/{conv_id}"
-        )
-        resp.raise_for_status()
-        return resp.json()
+        # Handle if result is a dict with a 'conversations' key (pagination wrapper)
+        if isinstance(result, dict):
+            if "conversations" in result:
+                result = result["conversations"]
+                log.info(f"[CLAUDE API] Extracted conversations from wrapper")
+            elif "items" in result:
+                result = result["items"]
+                log.info(f"[CLAUDE API] Extracted items from wrapper")
 
-    def get_conversation(self, conv_id: str) -> Optional[dict]:
+        if not isinstance(result, list):
+            log.error(f"[CLAUDE API] Expected list but got {type(result).__name__}")
+            return []
+
+        log.info(f"[CLAUDE API] Retrieved {len(result)} conversations from Claude")
+        return result
+
+    async def get_conversation(self, conv_id: str) -> Optional[dict]:
         """Get full conversation content by ID."""
+        org_id = await self._get_org_id()
         try:
-            return self._fetch_conversation(conv_id)
-        except httpx.HTTPStatusError as e:
-            log.warning(f"Failed to fetch conversation {conv_id}: {e}")
-            return None
-        except (httpx.TimeoutException, httpx.ConnectError) as e:
-            log.warning(f"Connection error fetching conversation {conv_id}: {e}")
+            result = await self._api_request(
+                f"/organizations/{org_id}/chat_conversations/{conv_id}"
+            )
+            msg_count = len(result.get("chat_messages", []))
+            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages")
+            return result
+        except Exception as e:
+            log.warning(f"[CLAUDE API] Failed to fetch conversation {conv_id}: {e}")
             return None
 
-    def get_all_conversations_full(self) -> list[dict]:
+    async def get_all_conversations_full(self) -> list[dict]:
         """Get all conversations with full message content."""
-        conversations_meta = self.get_conversations_list()
-        log.info(f"Found {len(conversations_meta)} conversations")
+        log.info("[CLAUDE API] Starting to fetch all conversations with full content...")
+        conversations_meta = await self.get_conversations_list()
+        log.info(f"[CLAUDE API] Found {len(conversations_meta)} conversations to fetch")
 
         full_conversations = []
         for i, conv_meta in enumerate(conversations_meta):
+            # Handle if conv_meta is not a dict
+            if not isinstance(conv_meta, dict):
+                log.warning(f"[CLAUDE API] Skipping non-dict item at index {i}: {type(conv_meta).__name__}")
+                continue
+
             conv_id = conv_meta.get("uuid")
             if not conv_id:
+                log.warning(f"[CLAUDE API] Skipping conversation without uuid at index {i}")
                 continue
 
             name = conv_meta.get("name", "Untitled")[:50]
-            log.debug(f"Fetching {i+1}/{len(conversations_meta)}: {name}")
+            log.info(f"[CLAUDE API] Fetching [{i+1}/{len(conversations_meta)}]: {name}")
 
-            conv = self.get_conversation(conv_id)
+            conv = await self.get_conversation(conv_id)
             if conv:
                 full_conversations.append(conv)
 
             # Small delay to be nice to the API
-            time.sleep(0.3)
+            await asyncio.sleep(0.3)
 
+        log.info(f"[CLAUDE API] Successfully fetched {len(full_conversations)} full conversations")
         return full_conversations
 
-    def close(self):
-        self.client.close()
+    async def close(self):
+        """Cleanup resources."""
+        self._org_id = None
+        self._cookies = None
 
 
 class TriliumSync:
@@ -320,11 +451,16 @@ class TriliumSync:
         parent_note_title: str = "Claude Chats",
         parent_label: str = "claudeChatsRoot",
     ):
+        log.info(f"[TRILIUM] Initializing connection to {trilium_url}")
+        log.info(f"[TRILIUM] Token length: {len(token)} chars")
+        self.trilium_url = trilium_url
         self.ea = ETAPI(trilium_url, token)
-        self.parent_note_id = parent_note_id  # User-specified parent
+        self.parent_note_id = parent_note_id
         self.parent_note_title = parent_note_title
         self.parent_label = parent_label
         self._resolved_parent_id: Optional[str] = None
+        log.info(f"[TRILIUM] Parent note ID: {parent_note_id or '(auto-create)'}")
+        log.info(f"[TRILIUM] Parent note title: {parent_note_title}")
 
     def find_note_by_conversation_id(self, conv_id: str) -> Optional[str]:
         """Find existing Trilium note by claudeConversationId label."""
@@ -341,31 +477,33 @@ class TriliumSync:
     def _get_or_create_parent_note(self) -> str:
         """Get or create the parent note for Claude chats."""
         if self._resolved_parent_id:
+            log.info(f"[TRILIUM] Using cached parent note ID: {self._resolved_parent_id}")
             return self._resolved_parent_id
 
-        # If user specified a parent note ID, verify it exists and use it
         if self.parent_note_id:
+            log.info(f"[TRILIUM] >>> GET note {self.parent_note_id}")
             try:
                 note = self.ea.get_note(self.parent_note_id)
                 if note:
                     self._resolved_parent_id = self.parent_note_id
-                    log.info(f"Using specified parent note: {note.get('title', self.parent_note_id)}")
+                    log.info(f"[TRILIUM] <<< Found specified parent note: {note.get('title', self.parent_note_id)}")
                     return self._resolved_parent_id
             except Exception as e:
-                log.warning(f"Specified parent note {self.parent_note_id} not found: {e}")
-                log.warning("Falling back to auto-create behavior")
+                log.warning(f"[TRILIUM] <<< Specified parent note {self.parent_note_id} not found: {e}")
+                log.warning("[TRILIUM] Falling back to auto-create behavior")
 
-        # Search for existing parent note by label
+        log.info(f"[TRILIUM] >>> SEARCH for #{self.parent_label}")
         try:
             results = self.ea.search_note(search=f"#{self.parent_label}")
             if results and results.get("results"):
                 self._resolved_parent_id = results["results"][0]["noteId"]
-                log.debug(f"Found existing parent note: {self._resolved_parent_id}")
+                log.info(f"[TRILIUM] <<< Found existing parent note: {self._resolved_parent_id}")
                 return self._resolved_parent_id
+            log.info("[TRILIUM] <<< No existing parent note found")
         except Exception as e:
-            log.debug(f"Search failed, will create new parent: {e}")
+            log.info(f"[TRILIUM] <<< Search failed, will create new parent: {e}")
 
-        # Create new parent note under root
+        log.info(f"[TRILIUM] >>> CREATE note '{self.parent_note_title}' under root")
         try:
             result = self.ea.create_note(
                 parentNoteId="root",
@@ -376,11 +514,12 @@ class TriliumSync:
             if not result or "note" not in result or "noteId" not in result["note"]:
                 raise ValueError(f"Invalid response from create_note: {result}")
             self._resolved_parent_id = result["note"]["noteId"]
+            log.info(f"[TRILIUM] <<< Created note with ID: {self._resolved_parent_id}")
         except Exception as e:
-            log.error(f"Failed to create parent note '{self.parent_note_title}': {e}")
+            log.error(f"[TRILIUM] <<< Failed to create parent note '{self.parent_note_title}': {e}")
             raise RuntimeError(f"Cannot create parent note: {e}") from e
 
-        # Add label for easy finding
+        log.info(f"[TRILIUM] >>> CREATE attribute #{self.parent_label} on {self._resolved_parent_id}")
         try:
             self.ea.create_attribute(
                 noteId=self._resolved_parent_id,
@@ -389,10 +528,11 @@ class TriliumSync:
                 value="",
                 isInheritable=False,
             )
+            log.info("[TRILIUM] <<< Attribute created successfully")
         except Exception as e:
-            log.warning(f"Failed to add label to parent note: {e}")
+            log.warning(f"[TRILIUM] <<< Failed to add label to parent note: {e}")
 
-        log.info(f"Created parent note '{self.parent_note_title}': {self._resolved_parent_id}")
+        log.info(f"[TRILIUM] Parent note ready: '{self.parent_note_title}' ({self._resolved_parent_id})")
         return self._resolved_parent_id
 
     def _escape_html(self, text: str) -> str:
@@ -408,7 +548,7 @@ class TriliumSync:
         """Format message content with markdown to HTML conversion."""
         text = self._escape_html(text)
 
-        # Code blocks with language (newline after language is optional)
+        # Code blocks with language
         text = re.sub(
             r"```(\w*)\n?(.*?)```",
             r'<pre><code class="language-\1">\2</code></pre>',
@@ -425,7 +565,7 @@ class TriliumSync:
         # Italic
         text = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", text)
 
-        # Links [text](url)
+        # Links
         text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
 
         # Headers
@@ -433,13 +573,9 @@ class TriliumSync:
         text = re.sub(r"^## (.+)$", r"<h3>\1</h3>", text, flags=re.MULTILINE)
         text = re.sub(r"^# (.+)$", r"<h2>\1</h2>", text, flags=re.MULTILINE)
 
-        # Unordered lists (- or * at start of line)
+        # Lists
         text = re.sub(r"^[\-\*] (.+)$", r"<li>\1</li>", text, flags=re.MULTILINE)
-
-        # Ordered lists (1. 2. etc at start of line)
         text = re.sub(r"^\d+\. (.+)$", r"<li>\1</li>", text, flags=re.MULTILINE)
-
-        # Wrap consecutive <li> items in <ul> tags
         text = re.sub(
             r"((?:<li>.*?</li>\n?)+)",
             r"<ul>\1</ul>",
@@ -447,7 +583,7 @@ class TriliumSync:
             flags=re.DOTALL,
         )
 
-        # Line breaks (preserve in non-code areas)
+        # Line breaks
         lines = text.split("\n")
         result = []
         in_code = False
@@ -486,17 +622,16 @@ class TriliumSync:
             timestamp = msg.get("created_at", "")
 
             is_human = sender == "human"
-            border_color = "#3b82f6" if is_human else "#10b981"
-            bg_color = "#eff6ff" if is_human else "#f0fdf4"
             sender_label = "Human" if is_human else "Claude"
 
             formatted_text = self._format_message_content(text)
 
             html_parts.append(f"""
-<div style="margin: 1em 0; padding: 1em; border-left: 4px solid {border_color}; background: {bg_color};">
+<div style="margin: 1.5em 0; padding: 0.5em 0;">
     <p style="margin: 0 0 0.5em 0;"><strong>{sender_label}</strong> <span style="color: #6b7280; font-size: 0.875em;">({timestamp})</span></p>
     <div style="margin: 0;">{formatted_text}</div>
 </div>
+<hr style="border: none; border-top: 1px solid #e5e7eb; margin: 0;" />
 """)
 
         return "\n".join(html_parts)
@@ -509,19 +644,26 @@ class TriliumSync:
         content = self._format_conversation(conv)
         conv_id = conv.get("uuid", "")
         updated_at = conv.get("updated_at", "")
+        msg_count = len(conv.get("chat_messages", []))
+
+        log.info(f"[TRILIUM] Syncing conversation: {title[:50]}")
+        log.info(f"[TRILIUM]   - Conversation ID: {conv_id}")
+        log.info(f"[TRILIUM]   - Messages: {msg_count}")
+        log.info(f"[TRILIUM]   - Content length: {len(content)} chars")
 
         if existing_note_id:
-            # Update existing note
+            log.info(f"[TRILIUM] >>> PATCH note {existing_note_id} (update existing)")
             try:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
                 self.ea.patch_note_content(noteId=existing_note_id, content=content)
-                log.info(f"Updated: {title[:60]}")
+                log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
                 return existing_note_id
             except Exception as e:
-                log.warning(f"Failed to update note {existing_note_id}, creating new: {e}")
+                log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
+                log.warning("[TRILIUM] Will create new note instead")
 
-        # Create new note
         parent_id = self._get_or_create_parent_note()
+        log.info(f"[TRILIUM] >>> CREATE note '{title[:50]}' under {parent_id}")
         result = self.ea.create_note(
             parentNoteId=parent_id,
             title=title,
@@ -529,8 +671,9 @@ class TriliumSync:
             content=content,
         )
         note_id = result["note"]["noteId"]
+        log.info(f"[TRILIUM] <<< Created note: {note_id}")
 
-        # Add labels for tracking
+        log.info(f"[TRILIUM] >>> CREATE attributes on {note_id}")
         self.ea.create_attribute(
             noteId=note_id,
             type="label",
@@ -552,8 +695,9 @@ class TriliumSync:
             value="",
             isInheritable=False,
         )
+        log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
-        log.info(f"Created: {title[:60]}")
+        log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id
 
 
@@ -573,10 +717,21 @@ def compute_content_hash(conv: dict) -> str:
     return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
-def run_sync():
+async def run_sync():
     """Run a single sync cycle."""
+    log.info("=" * 60)
+    log.info("[SYNC] Starting sync cycle")
+    log.info("=" * 60)
+
+    log.info(f"[SYNC] State file: {CONFIG['state_file']}")
     state = SyncState(CONFIG["state_file"])
+    log.info(f"[SYNC] Last sync: {state.data.get('last_sync', 'Never')}")
+    log.info(f"[SYNC] Known conversations in state: {len(state.data.get('conversations', {}))}")
+
+    log.info("[SYNC] Initializing Claude API client...")
+    log.info(f"[SYNC] Session key length: {len(CONFIG['claude_session_key'])} chars")
     claude = ClaudeAPI(CONFIG["claude_session_key"])
+
     trilium = TriliumSync(
         CONFIG["trilium_url"],
         CONFIG["trilium_token"],
@@ -585,42 +740,54 @@ def run_sync():
         parent_label=CONFIG["parent_note_label"],
     )
 
-    log.info(f"Starting sync (last: {state.data.get('last_sync', 'Never')})")
+    log.info("-" * 60)
+    log.info("[SYNC] Phase 1: Fetching conversations from Claude.ai")
+    log.info("-" * 60)
 
     try:
-        conversations = claude.get_all_conversations_full()
-    except httpx.HTTPStatusError as e:
-        if e.response.status_code == 401:
-            log.error("Authentication failed. Check your CLAUDE_SESSION_KEY.")
+        conversations = await claude.get_all_conversations_full()
+    except Exception as e:
+        error_msg = str(e)
+        log.error(f"[SYNC] FAILED to fetch conversations: {error_msg}")
+        if "401" in error_msg or "session expired" in error_msg.lower() or "login" in error_msg.lower():
+            log.error("[SYNC] Authentication failed. Check your CLAUDE_SESSION_KEY.")
             notifier.notify_session_expired()
         else:
-            log.error(f"API error: {e}")
-            notifier.notify_error(str(e))
-        return
-    except Exception as e:
-        log.error(f"Unexpected error fetching conversations: {e}")
-        notifier.notify_error(str(e))
+            log.error(f"[SYNC] API error: {e}")
+            notifier.notify_error(error_msg)
         return
     finally:
-        claude.close()
+        log.info("[SYNC] Closing browser...")
+        await claude.close()
+        log.info("[SYNC] Browser closed")
 
     if not conversations:
-        log.warning("No conversations found")
+        log.warning("[SYNC] No conversations found - nothing to sync")
         return
+
+    log.info("-" * 60)
+    log.info("[SYNC] Phase 2: Syncing to Trilium Notes")
+    log.info("-" * 60)
+    log.info(f"[SYNC] Processing {len(conversations)} conversations...")
 
     synced = 0
     skipped = 0
     errors = 0
 
-    for conv in conversations:
+    for i, conv in enumerate(conversations):
         conv_id = conv.get("uuid", "")
+        conv_name = conv.get("name", "Untitled")[:40]
         if not conv_id:
             continue
 
         content_hash = compute_content_hash(conv)
         existing_hash = state.get_conversation_hash(conv_id)
 
+        log.info(f"[SYNC] [{i+1}/{len(conversations)}] {conv_name}")
+        log.info(f"[SYNC]   Hash: {content_hash} (existing: {existing_hash or 'none'})")
+
         if existing_hash == content_hash:
+            log.info(f"[SYNC]   -> SKIPPED (unchanged)")
             skipped += 1
             continue
 
@@ -633,41 +800,70 @@ def run_sync():
                     log.info(f"Recovered note ID from Trilium for: {conv.get('name', conv_id)[:30]}")
             note_id = trilium.sync_conversation(conv, existing_note_id)
             state.update_conversation(conv_id, content_hash, note_id)
+            log.info(f"[SYNC]   -> SUCCESS (note: {note_id})")
             synced += 1
         except Exception as e:
-            log.error(f"Failed to sync {conv.get('name', conv_id)[:30]}: {e}")
+            log.error(f"[SYNC]   -> FAILED: {e}")
             errors += 1
 
-    log.info(f"Sync complete: {synced} synced, {skipped} unchanged, {errors} errors")
+    log.info("=" * 60)
+    log.info(f"[SYNC] Sync complete!")
+    log.info(f"[SYNC]   Synced: {synced}")
+    log.info(f"[SYNC]   Skipped (unchanged): {skipped}")
+    log.info(f"[SYNC]   Errors: {errors}")
+    log.info("=" * 60)
 
 
-def main():
-    # Validate configuration
+async def async_main():
+    """Async main entry point."""
+    log.info("=" * 60)
+    log.info(f"Claude-Trilium Sync v{get_version()}")
+    log.info("=" * 60)
+
+    log.info("[CONFIG] Configuration:")
+    log.info(f"[CONFIG]   TRILIUM_URL: {CONFIG['trilium_url']}")
+    log.info(f"[CONFIG]   TRILIUM_TOKEN: {'*' * 8}... ({len(CONFIG['trilium_token'])} chars)")
+    log.info(f"[CONFIG]   CLAUDE_SESSION_KEY: {'*' * 8}... ({len(CONFIG['claude_session_key'])} chars)")
+    log.info(f"[CONFIG]   STATE_FILE: {CONFIG['state_file']}")
+    log.info(f"[CONFIG]   SYNC_INTERVAL: {CONFIG['sync_interval']}s")
+    log.info(f"[CONFIG]   LOG_LEVEL: {CONFIG['log_level']}")
+    log.info(f"[CONFIG]   PARENT_NOTE_ID: {CONFIG['parent_note_id'] or '(auto)'}")
+    log.info(f"[CONFIG]   PARENT_NOTE_TITLE: {CONFIG['parent_note_title']}")
+    if CONFIG['pushover_user_key']:
+        log.info(f"[CONFIG]   PUSHOVER: Enabled")
+    else:
+        log.info(f"[CONFIG]   PUSHOVER: Disabled")
+    log.info(f"[CONFIG]   FLARESOLVERR_URL: {CONFIG['flaresolverr_url']}")
+
     if not CONFIG["trilium_token"]:
-        log.error("TRILIUM_TOKEN not set")
-        log.error("Get token from Trilium: Options -> ETAPI -> Create new token")
+        log.error("[CONFIG] TRILIUM_TOKEN not set!")
+        log.error("[CONFIG] Get token from Trilium: Options -> ETAPI -> Create new token")
         sys.exit(1)
 
     if not CONFIG["claude_session_key"]:
-        log.error("CLAUDE_SESSION_KEY not set")
-        log.error("Get from Claude.ai: DevTools -> Application -> Cookies -> sessionKey")
+        log.error("[CONFIG] CLAUDE_SESSION_KEY not set!")
+        log.error("[CONFIG] Get from Claude.ai: DevTools -> Application -> Cookies -> sessionKey")
         sys.exit(1)
 
     interval = CONFIG["sync_interval"]
 
     if interval <= 0:
-        # One-shot mode
-        run_sync()
+        log.info("[MODE] Running in one-shot mode")
+        await run_sync()
     else:
-        # Continuous mode
-        log.info(f"Running in continuous mode, interval: {interval}s")
+        log.info(f"[MODE] Running in continuous mode, interval: {interval}s")
         while True:
             try:
-                run_sync()
+                await run_sync()
             except Exception as e:
-                log.exception(f"Sync failed: {e}")
-            log.info(f"Sleeping {interval}s until next sync...")
-            time.sleep(interval)
+                log.exception(f"[SYNC] Sync failed with exception: {e}")
+            log.info(f"[MODE] Sleeping {interval}s until next sync...")
+            await asyncio.sleep(interval)
+
+
+def main():
+    """Main entry point."""
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
