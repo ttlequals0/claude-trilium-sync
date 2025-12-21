@@ -462,6 +462,18 @@ class TriliumSync:
         log.info(f"[TRILIUM] Parent note ID: {parent_note_id or '(auto-create)'}")
         log.info(f"[TRILIUM] Parent note title: {parent_note_title}")
 
+    def find_note_by_conversation_id(self, conv_id: str) -> Optional[str]:
+        """Find existing Trilium note by claudeConversationId label."""
+        try:
+            results = self.ea.search_note(search=f"#claudeConversationId={conv_id}")
+            if results and results.get("results"):
+                note_id = results["results"][0]["noteId"]
+                log.debug(f"Found existing note for conversation {conv_id}: {note_id}")
+                return note_id
+        except Exception as e:
+            log.debug(f"Search for conversation {conv_id} failed: {e}")
+        return None
+
     def _get_or_create_parent_note(self) -> str:
         """Get or create the parent note for Claude chats."""
         if self._resolved_parent_id:
@@ -781,11 +793,11 @@ async def run_sync():
 
         try:
             existing_note_id = state.get_trilium_note_id(conv_id)
-            if existing_note_id:
-                log.info(f"[SYNC]   -> UPDATING existing note {existing_note_id}")
-            else:
-                log.info(f"[SYNC]   -> CREATING new note")
-
+            if not existing_note_id:
+                # State file may have been lost - check Trilium directly
+                existing_note_id = trilium.find_note_by_conversation_id(conv_id)
+                if existing_note_id:
+                    log.info(f"Recovered note ID from Trilium for: {conv.get('name', conv_id)[:30]}")
             note_id = trilium.sync_conversation(conv, existing_note_id)
             state.update_conversation(conv_id, content_hash, note_id)
             log.info(f"[SYNC]   -> SUCCESS (note: {note_id})")

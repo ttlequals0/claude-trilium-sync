@@ -1,6 +1,8 @@
 """Version information for claude-trilium-sync."""
 
-_DEFAULT_VERSION = '1.1.16'
+__version__ = "1.0.1"
 
-def get_version():
-    return _DEFAULT_VERSION
+
+def get_version() -> str:
+    """Return the current version string."""
+    return __version__
