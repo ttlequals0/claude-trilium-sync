@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] - 2025-12-23
+
+### Added
+- Attachment support: Claude message attachments are now saved as child notes under the conversation
+  - Each attachment creates a child note with extracted content (if available)
+  - Attachments are labeled with `claudeAttachment` and `claudeAttachmentFileName` for easy identification
+  - Duplicate attachments are skipped on sync updates
+
+### Fixed
+- Improved list formatting in markdown to HTML conversion
+  - Blank lines between list items no longer break the list grouping
+  - Ordered lists (1. 2. 3.) now properly render with `<ol>` tags instead of `<ul>`
+  - Mixed list types are handled correctly
+  - List items no longer get spurious `<br/>` tags added
+
 ## [1.0.1] - 2025-12-21
 
 ### Fixed

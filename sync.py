@@ -544,6 +544,65 @@ class TriliumSync:
             .replace('"', "&quot;")
         )
 
+    def _format_lists(self, text: str) -> str:
+        """Process markdown lists into HTML with proper ul/ol handling.
+
+        Handles:
+        - Unordered lists (- or *)
+        - Ordered lists (1. 2. etc)
+        - Blank lines between list items (tolerates them)
+        - Mixed list types (flushes and switches)
+        """
+        lines = text.split("\n")
+        result = []
+        current_list_type = None  # 'ul' or 'ol'
+        list_items = []
+
+        def flush_list():
+            """Output accumulated list items wrapped in appropriate tag."""
+            nonlocal list_items, current_list_type
+            if list_items and current_list_type:
+                tag = current_list_type
+                result.append(f"<{tag}>")
+                result.extend(list_items)
+                result.append(f"</{tag}>")
+                list_items = []
+                current_list_type = None
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Check for unordered list item (- or *)
+            ul_match = re.match(r"^[\-\*]\s+(.+)$", stripped)
+            # Check for ordered list item (1. 2. etc)
+            ol_match = re.match(r"^\d+\.\s+(.+)$", stripped)
+
+            if ul_match:
+                # If we were in an ordered list, flush it first
+                if current_list_type == "ol":
+                    flush_list()
+                current_list_type = "ul"
+                list_items.append(f"<li>{ul_match.group(1)}</li>")
+            elif ol_match:
+                # If we were in an unordered list, flush it first
+                if current_list_type == "ul":
+                    flush_list()
+                current_list_type = "ol"
+                list_items.append(f"<li>{ol_match.group(1)}</li>")
+            elif stripped == "" and current_list_type:
+                # Empty line while in a list - continue the list
+                # (This handles blank lines between list items)
+                continue
+            else:
+                # Non-list line - flush any pending list and add the line
+                flush_list()
+                result.append(line)
+
+        # Flush any remaining list at end
+        flush_list()
+
+        return "\n".join(result)
+
     def _format_message_content(self, text: str) -> str:
         """Format message content with markdown to HTML conversion."""
         text = self._escape_html(text)
@@ -573,17 +632,10 @@ class TriliumSync:
         text = re.sub(r"^## (.+)$", r"<h3>\1</h3>", text, flags=re.MULTILINE)
         text = re.sub(r"^# (.+)$", r"<h2>\1</h2>", text, flags=re.MULTILINE)
 
-        # Lists
-        text = re.sub(r"^[\-\*] (.+)$", r"<li>\1</li>", text, flags=re.MULTILINE)
-        text = re.sub(r"^\d+\. (.+)$", r"<li>\1</li>", text, flags=re.MULTILINE)
-        text = re.sub(
-            r"((?:<li>.*?</li>\n?)+)",
-            r"<ul>\1</ul>",
-            text,
-            flags=re.DOTALL,
-        )
+        # Lists - use dedicated method for proper handling
+        text = self._format_lists(text)
 
-        # Line breaks
+        # Line breaks - skip code blocks and list elements
         lines = text.split("\n")
         result = []
         in_code = False
@@ -592,6 +644,10 @@ class TriliumSync:
                 in_code = True
             if "</pre>" in line:
                 in_code = False
+                result.append(line)
+                continue
+            # Skip adding <br/> to list elements
+            if any(tag in line for tag in ["<ul>", "</ul>", "<ol>", "</ol>", "<li>"]):
                 result.append(line)
                 continue
             if not in_code and line.strip():
@@ -636,6 +692,131 @@ class TriliumSync:
 
         return "\n".join(html_parts)
 
+    def _create_attachment_note(
+        self, parent_note_id: str, attachment: dict, msg_index: int, att_index: int
+    ) -> Optional[str]:
+        """Create a child note for an attachment under the conversation note.
+
+        Args:
+            parent_note_id: The conversation note ID to attach to
+            attachment: The attachment dict from Claude API
+            msg_index: Index of the message containing this attachment
+            att_index: Index of this attachment within the message
+
+        Returns:
+            The created note ID, or None if creation failed
+        """
+        file_name = attachment.get("file_name", f"Attachment {att_index + 1}")
+        file_type = attachment.get("file_type", "unknown")
+        file_size = attachment.get("file_size", 0)
+        extracted_content = attachment.get("extracted_content", "")
+
+        # Build the note content
+        content_parts = [
+            f"<h2>{self._escape_html(file_name)}</h2>",
+            f"<p><strong>Type:</strong> {self._escape_html(file_type)}<br/>",
+            f"<strong>Size:</strong> {file_size} bytes<br/>",
+            f"<strong>From message:</strong> #{msg_index + 1}</p>",
+            "<hr/>",
+        ]
+
+        if extracted_content:
+            content_parts.append("<h3>Extracted Content</h3>")
+            content_parts.append(f"<pre>{self._escape_html(extracted_content)}</pre>")
+        else:
+            content_parts.append("<p><em>No extracted content available</em></p>")
+
+        content = "\n".join(content_parts)
+
+        log.info(f"[TRILIUM] >>> CREATE attachment note '{file_name}' under {parent_note_id}")
+        try:
+            result = self.ea.create_note(
+                parentNoteId=parent_note_id,
+                title=f"[Attachment] {file_name}",
+                type="text",
+                content=content,
+            )
+            note_id = result["note"]["noteId"]
+
+            # Add labels to identify this as an attachment
+            self.ea.create_attribute(
+                noteId=note_id,
+                type="label",
+                name="claudeAttachment",
+                value="",
+                isInheritable=False,
+            )
+            self.ea.create_attribute(
+                noteId=note_id,
+                type="label",
+                name="claudeAttachmentFileName",
+                value=file_name,
+                isInheritable=False,
+            )
+
+            log.info(f"[TRILIUM] <<< Created attachment note: {note_id}")
+            return note_id
+        except Exception as e:
+            log.warning(f"[TRILIUM] <<< Failed to create attachment note: {e}")
+            return None
+
+    def _get_existing_attachment_notes(self, parent_note_id: str) -> dict:
+        """Get existing attachment child notes for a conversation.
+
+        Returns:
+            Dict mapping file_name to note_id
+        """
+        try:
+            results = self.ea.search_note(
+                search=f"#claudeAttachment note.parents.noteId={parent_note_id}"
+            )
+            if results and results.get("results"):
+                existing = {}
+                for note in results["results"]:
+                    # Use title which is "[Attachment] filename"
+                    title = note.get("title", "")
+                    if title.startswith("[Attachment] "):
+                        file_name = title[13:]  # Remove prefix
+                        existing[file_name] = note["noteId"]
+                return existing
+        except Exception as e:
+            log.debug(f"Failed to search for existing attachments: {e}")
+        return {}
+
+    def _sync_attachments(self, conv: dict, parent_note_id: str):
+        """Sync all attachments from conversation messages as child notes."""
+        messages = conv.get("chat_messages", [])
+
+        # Get existing attachment notes to avoid duplicates
+        existing_attachments = self._get_existing_attachment_notes(parent_note_id)
+
+        attachment_count = 0
+        skipped_count = 0
+
+        for msg_index, msg in enumerate(messages):
+            attachments = msg.get("attachments", [])
+            if not attachments:
+                continue
+
+            for att_index, attachment in enumerate(attachments):
+                file_name = attachment.get("file_name", f"Attachment {att_index + 1}")
+
+                # Skip if attachment appears to be empty/invalid
+                if not attachment.get("file_name") and not attachment.get("id"):
+                    continue
+
+                # Skip if already exists
+                if file_name in existing_attachments:
+                    log.debug(f"[TRILIUM] Skipping existing attachment: {file_name}")
+                    skipped_count += 1
+                    continue
+
+                self._create_attachment_note(parent_note_id, attachment, msg_index, att_index)
+                attachment_count += 1
+
+        if attachment_count > 0 or skipped_count > 0:
+            log.info(f"[TRILIUM] Attachments: {attachment_count} created, {skipped_count} skipped (existing)")
+
     def sync_conversation(
         self, conv: dict, existing_note_id: Optional[str] = None
     ) -> str:
@@ -657,6 +838,8 @@ class TriliumSync:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
                 self.ea.patch_note_content(noteId=existing_note_id, content=content)
                 log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
+                # Sync attachments for existing note
+                self._sync_attachments(conv, existing_note_id)
                 return existing_note_id
             except Exception as e:
                 log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
@@ -697,6 +880,9 @@ class TriliumSync:
         )
         log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
+        # Sync attachments for new note
+        self._sync_attachments(conv, note_id)
+
         log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id
 
@@ -706,7 +892,13 @@ def compute_content_hash(conv: dict) -> str:
     content = json.dumps(
         {
             "messages": [
-                {"sender": m.get("sender"), "text": m.get("text")}
+                {
+                    "sender": m.get("sender"),
+                    "text": m.get("text"),
+                    "attachments": [
+                        a.get("file_name", "") for a in m.get("attachments", [])
+                    ],
+                }
                 for m in conv.get("chat_messages", [])
             ],
             "name": conv.get("name", ""),
