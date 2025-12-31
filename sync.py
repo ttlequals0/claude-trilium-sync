@@ -403,6 +403,58 @@ class ClaudeAPI:
             log.warning(f"[CLAUDE API] Failed to fetch conversation {conv_id}: {e}")
             return None
 
+    async def get_attachment_content(self, conv_id: str, attachment_id: str) -> Optional[bytes]:
+        """Download attachment file content from Claude.
+
+        Args:
+            conv_id: The conversation UUID containing the attachment
+            attachment_id: The attachment UUID to download
+
+        Returns:
+            Binary content of the attachment, or None if download failed
+        """
+        org_id = await self._get_org_id()
+        log.info(f"[CLAUDE API] >>> Downloading attachment {attachment_id[:8]}...")
+
+        try:
+            result = await self._api_request(
+                f"/organizations/{org_id}/chat_conversations/{conv_id}/files/{attachment_id}"
+            )
+
+            # The response might contain base64 encoded content or a download URL
+            if isinstance(result, dict):
+                # Check for direct content (base64 encoded)
+                if "content" in result:
+                    import base64
+                    content = result["content"]
+                    if isinstance(content, str):
+                        try:
+                            return base64.b64decode(content)
+                        except Exception:
+                            return content.encode('utf-8')
+                    return content
+
+                # Check for download URL
+                if "url" in result:
+                    download_url = result["url"]
+                    log.info(f"[CLAUDE API] >>> Following download URL for attachment")
+                    response = await self._flaresolverr_request(download_url)
+                    body = response.get("body", "")
+                    if body:
+                        # Try to decode as base64 if it looks like it
+                        import base64
+                        try:
+                            return base64.b64decode(body)
+                        except Exception:
+                            return body.encode('utf-8') if isinstance(body, str) else body
+
+            log.warning(f"[CLAUDE API] <<< Unexpected attachment response format: {type(result)}")
+            return None
+
+        except Exception as e:
+            log.warning(f"[CLAUDE API] <<< Failed to download attachment {attachment_id[:8]}: {e}")
+            return None
+
     async def get_all_conversations_full(self) -> list[dict]:
         """Get all conversations with full message content."""
         log.info("[CLAUDE API] Starting to fetch all conversations with full content...")
@@ -693,7 +745,8 @@ class TriliumSync:
         return "\n".join(html_parts)
 
     def _create_attachment_note(
-        self, parent_note_id: str, attachment: dict, msg_index: int, att_index: int
+        self, parent_note_id: str, attachment: dict, msg_index: int, att_index: int,
+        file_content: Optional[bytes] = None
     ) -> Optional[str]:
         """Create a child note for an attachment under the conversation note.
 
@@ -702,6 +755,7 @@ class TriliumSync:
             attachment: The attachment dict from Claude API
             msg_index: Index of the message containing this attachment
             att_index: Index of this attachment within the message
+            file_content: Optional binary content of the file (downloaded)
 
         Returns:
             The created note ID, or None if creation failed
@@ -711,31 +765,43 @@ class TriliumSync:
         file_size = attachment.get("file_size", 0)
         extracted_content = attachment.get("extracted_content", "")
 
-        # Build the note content
-        content_parts = [
-            f"<h2>{self._escape_html(file_name)}</h2>",
-            f"<p><strong>Type:</strong> {self._escape_html(file_type)}<br/>",
-            f"<strong>Size:</strong> {file_size} bytes<br/>",
-            f"<strong>From message:</strong> #{msg_index + 1}</p>",
-            "<hr/>",
-        ]
-
-        if extracted_content:
-            content_parts.append("<h3>Extracted Content</h3>")
-            content_parts.append(f"<pre>{self._escape_html(extracted_content)}</pre>")
-        else:
-            content_parts.append("<p><em>No extracted content available</em></p>")
-
-        content = "\n".join(content_parts)
-
         log.info(f"[TRILIUM] >>> CREATE attachment note '{file_name}' under {parent_note_id}")
+
         try:
-            result = self.ea.create_note(
-                parentNoteId=parent_note_id,
-                title=f"[Attachment] {file_name}",
-                type="text",
-                content=content,
-            )
+            # If we have file content, create a file-type note
+            if file_content:
+                log.info(f"[TRILIUM] Creating file attachment with {len(file_content)} bytes")
+                result = self.ea.create_note(
+                    parentNoteId=parent_note_id,
+                    title=file_name,
+                    type="file",
+                    content=file_content,
+                    mime=file_type if file_type != "unknown" else "application/octet-stream",
+                )
+            else:
+                # Fall back to text note with metadata
+                content_parts = [
+                    f"<h2>{self._escape_html(file_name)}</h2>",
+                    f"<p><strong>Type:</strong> {self._escape_html(file_type)}<br/>",
+                    f"<strong>Size:</strong> {file_size} bytes<br/>",
+                    f"<strong>From message:</strong> #{msg_index + 1}</p>",
+                    "<hr/>",
+                ]
+
+                if extracted_content:
+                    content_parts.append("<h3>Extracted Content</h3>")
+                    content_parts.append(f"<pre>{self._escape_html(extracted_content)}</pre>")
+                else:
+                    content_parts.append("<p><em>No file content available - attachment metadata only</em></p>")
+
+                content = "\n".join(content_parts)
+                result = self.ea.create_note(
+                    parentNoteId=parent_note_id,
+                    title=f"[Attachment] {file_name}",
+                    type="text",
+                    content=content,
+                )
+
             note_id = result["note"]["noteId"]
 
             # Add labels to identify this as an attachment
@@ -783,15 +849,25 @@ class TriliumSync:
             log.debug(f"Failed to search for existing attachments: {e}")
         return {}
 
-    def _sync_attachments(self, conv: dict, parent_note_id: str):
-        """Sync all attachments from conversation messages as child notes."""
+    async def _sync_attachments(
+        self, conv: dict, parent_note_id: str, claude_api: Optional["ClaudeAPI"] = None
+    ):
+        """Sync all attachments from conversation messages as child notes.
+
+        Args:
+            conv: The conversation dict containing messages with attachments
+            parent_note_id: The Trilium note ID to attach files under
+            claude_api: Optional ClaudeAPI instance for downloading file content
+        """
         messages = conv.get("chat_messages", [])
+        conv_id = conv.get("uuid", "")
 
         # Get existing attachment notes to avoid duplicates
         existing_attachments = self._get_existing_attachment_notes(parent_note_id)
 
         attachment_count = 0
         skipped_count = 0
+        download_count = 0
 
         for msg_index, msg in enumerate(messages):
             attachments = msg.get("attachments", [])
@@ -800,9 +876,10 @@ class TriliumSync:
 
             for att_index, attachment in enumerate(attachments):
                 file_name = attachment.get("file_name", f"Attachment {att_index + 1}")
+                attachment_id = attachment.get("id", "")
 
                 # Skip if attachment appears to be empty/invalid
-                if not attachment.get("file_name") and not attachment.get("id"):
+                if not attachment.get("file_name") and not attachment_id:
                     continue
 
                 # Skip if already exists
@@ -811,16 +888,35 @@ class TriliumSync:
                     skipped_count += 1
                     continue
 
-                self._create_attachment_note(parent_note_id, attachment, msg_index, att_index)
+                # Try to download file content if we have an API client and attachment ID
+                file_content = None
+                if claude_api and attachment_id and conv_id:
+                    file_content = await claude_api.get_attachment_content(conv_id, attachment_id)
+                    if file_content:
+                        download_count += 1
+
+                self._create_attachment_note(
+                    parent_note_id, attachment, msg_index, att_index, file_content
+                )
                 attachment_count += 1
 
         if attachment_count > 0 or skipped_count > 0:
-            log.info(f"[TRILIUM] Attachments: {attachment_count} created, {skipped_count} skipped (existing)")
+            log.info(
+                f"[TRILIUM] Attachments: {attachment_count} created "
+                f"({download_count} with content), {skipped_count} skipped (existing)"
+            )
 
-    def sync_conversation(
-        self, conv: dict, existing_note_id: Optional[str] = None
+    async def sync_conversation(
+        self, conv: dict, existing_note_id: Optional[str] = None,
+        claude_api: Optional["ClaudeAPI"] = None
     ) -> str:
-        """Sync a single conversation to Trilium. Returns the note ID."""
+        """Sync a single conversation to Trilium. Returns the note ID.
+
+        Args:
+            conv: The conversation dict from Claude API
+            existing_note_id: Optional existing Trilium note ID to update
+            claude_api: Optional ClaudeAPI instance for downloading attachments
+        """
         title = conv.get("name", "Untitled Conversation")
         content = self._format_conversation(conv)
         conv_id = conv.get("uuid", "")
@@ -836,10 +932,10 @@ class TriliumSync:
             log.info(f"[TRILIUM] >>> PATCH note {existing_note_id} (update existing)")
             try:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
-                self.ea.patch_note_content(noteId=existing_note_id, content=content)
+                self.ea.update_note_content(noteId=existing_note_id, content=content)
                 log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
                 # Sync attachments for existing note
-                self._sync_attachments(conv, existing_note_id)
+                await self._sync_attachments(conv, existing_note_id, claude_api)
                 return existing_note_id
             except Exception as e:
                 log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
@@ -881,7 +977,7 @@ class TriliumSync:
         log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
         # Sync attachments for new note
-        self._sync_attachments(conv, note_id)
+        await self._sync_attachments(conv, note_id, claude_api)
 
         log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id
@@ -947,14 +1043,12 @@ async def run_sync():
         else:
             log.error(f"[SYNC] API error: {e}")
             notifier.notify_error(error_msg)
-        return
-    finally:
-        log.info("[SYNC] Closing browser...")
         await claude.close()
-        log.info("[SYNC] Browser closed")
+        return
 
     if not conversations:
         log.warning("[SYNC] No conversations found - nothing to sync")
+        await claude.close()
         return
 
     log.info("-" * 60)
@@ -990,13 +1084,18 @@ async def run_sync():
                 existing_note_id = trilium.find_note_by_conversation_id(conv_id)
                 if existing_note_id:
                     log.info(f"Recovered note ID from Trilium for: {conv.get('name', conv_id)[:30]}")
-            note_id = trilium.sync_conversation(conv, existing_note_id)
+            note_id = await trilium.sync_conversation(conv, existing_note_id, claude)
             state.update_conversation(conv_id, content_hash, note_id)
             log.info(f"[SYNC]   -> SUCCESS (note: {note_id})")
             synced += 1
         except Exception as e:
             log.error(f"[SYNC]   -> FAILED: {e}")
             errors += 1
+
+    # Close Claude API client after all syncs
+    log.info("[SYNC] Closing Claude API client...")
+    await claude.close()
+    log.info("[SYNC] Claude API client closed")
 
     log.info("=" * 60)
     log.info(f"[SYNC] Sync complete!")

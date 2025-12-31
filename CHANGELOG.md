@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] - 2025-12-30
+
+### Fixed
+- Fixed duplicate notes bug when continuing conversations
+  - Changed `patch_note_content()` to `update_note_content()` (correct trilium-py method name)
+  - Previously, continued conversations would create new notes instead of updating existing ones
+
+### Added
+- Attachment file download support
+  - Attachments are now downloaded as actual files instead of just metadata
+  - Creates file-type notes in Trilium with proper MIME types
+  - Falls back to text notes with metadata if download fails
+  - New `get_attachment_content()` method in ClaudeAPI for fetching file content via FlareSolverr
+
 ## [1.1.0] - 2025-12-23
 
 ### Added
