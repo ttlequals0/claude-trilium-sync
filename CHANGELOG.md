@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.1] - 2026-01-19
+
+### Added
+- Filter out "This block is not supported on your current device yet." placeholder text from messages
+  - Removes grey placeholder boxes that appear for tool use blocks (web searches, artifacts, etc.)
+  - Filtering applied before HTML conversion for clean output in Trilium notes
+  - Hash computation also filters this text to avoid unnecessary re-syncs
+
 ## [1.1.0] - 2025-12-23
 
 ### Added

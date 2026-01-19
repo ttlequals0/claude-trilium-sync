@@ -1,6 +1,6 @@
 """Version information for claude-trilium-sync."""
 
-__version__ = "1.1.0"
+__version__ = "1.2.1"
 
 
 def get_version() -> str:

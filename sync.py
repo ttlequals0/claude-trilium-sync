@@ -65,12 +65,32 @@ CONFIG = {
     "flaresolverr_url": os.environ.get("FLARESOLVERR_URL", "http://flaresolverr:8191/v1"),
 }
 
+# Unsupported block placeholder text to filter out
+UNSUPPORTED_BLOCK_TEXT = "This block is not supported on your current device yet."
+
 # Setup logging
 logging.basicConfig(
     level=getattr(logging, CONFIG["log_level"]),
     format="%(asctime)s - %(levelname)s - %(message)s",
 )
 log = logging.getLogger(__name__)
+
+
+def filter_unsupported_blocks(text: str) -> str:
+    """Remove 'unsupported block' placeholder lines from text.
+
+    Filters out lines containing the placeholder text that appears
+    when Claude's tool use blocks can't be rendered.
+    """
+    if not text or UNSUPPORTED_BLOCK_TEXT not in text:
+        return text
+
+    lines = text.split("\n")
+    filtered_lines = [
+        line for line in lines
+        if UNSUPPORTED_BLOCK_TEXT not in line
+    ]
+    return "\n".join(filtered_lines)
 
 
 class PushoverNotifier:
@@ -605,6 +625,7 @@ class TriliumSync:
 
     def _format_message_content(self, text: str) -> str:
         """Format message content with markdown to HTML conversion."""
+        text = filter_unsupported_blocks(text)
         text = self._escape_html(text)
 
         # Code blocks with language
@@ -894,7 +915,7 @@ def compute_content_hash(conv: dict) -> str:
             "messages": [
                 {
                     "sender": m.get("sender"),
-                    "text": m.get("text"),
+                    "text": filter_unsupported_blocks(m.get("text", "")),
                     "attachments": [
                         a.get("file_name", "") for a in m.get("attachments", [])
                     ],
