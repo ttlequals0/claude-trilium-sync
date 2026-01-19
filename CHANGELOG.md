@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.2] - 2026-01-19
+
+### Fixed
+- Empty grey boxes no longer appear after filtering unsupported blocks
+  - Collapse consecutive empty lines left behind after filtering
+
 ## [1.2.1] - 2026-01-19
 
 ### Added

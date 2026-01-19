@@ -80,7 +80,8 @@ def filter_unsupported_blocks(text: str) -> str:
     """Remove 'unsupported block' placeholder lines from text.
 
     Filters out lines containing the placeholder text that appears
-    when Claude's tool use blocks can't be rendered.
+    when Claude's tool use blocks can't be rendered. Also collapses
+    multiple consecutive empty lines to prevent empty grey boxes.
     """
     if not text or UNSUPPORTED_BLOCK_TEXT not in text:
         return text
@@ -90,7 +91,18 @@ def filter_unsupported_blocks(text: str) -> str:
         line for line in lines
         if UNSUPPORTED_BLOCK_TEXT not in line
     ]
-    return "\n".join(filtered_lines)
+
+    # Collapse multiple consecutive empty lines into one
+    result = []
+    prev_empty = False
+    for line in filtered_lines:
+        is_empty = line.strip() == ""
+        if is_empty and prev_empty:
+            continue  # Skip consecutive empty lines
+        result.append(line)
+        prev_empty = is_empty
+
+    return "\n".join(result)
 
 
 class PushoverNotifier:
