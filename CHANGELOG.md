@@ -2,6 +2,27 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-01-19
+
+### Fixed
+- Remove empty code blocks left after filtering unsupported block text
+  - Handles markdown code fences that become empty after text removal
+  - Collapses multiple empty lines to prevent rendering artifacts
+
+## [1.2.2] - 2026-01-19
+
+### Fixed
+- Empty grey boxes no longer appear after filtering unsupported blocks
+  - Collapse consecutive empty lines left behind after filtering
+
+## [1.2.1] - 2026-01-19
+
+### Added
+- Filter out "This block is not supported on your current device yet." placeholder text from messages
+  - Removes grey placeholder boxes that appear for tool use blocks (web searches, artifacts, etc.)
+  - Filtering applied before HTML conversion for clean output in Trilium notes
+  - Hash computation also filters this text to avoid unnecessary re-syncs
+
 ## [1.1.0] - 2025-12-23
 
 ### Added

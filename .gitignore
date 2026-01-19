@@ -34,7 +34,7 @@ state.json
 data/
 logs/
 *.log
-
+tmp/ 
 # Claude Code files
 .claude/
 CLAUDE.md
