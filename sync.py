@@ -80,8 +80,8 @@ def filter_unsupported_blocks(text: str) -> str:
     """Remove 'unsupported block' placeholder lines from text.
 
     Filters out lines containing the placeholder text that appears
-    when Claude's tool use blocks can't be rendered. Also collapses
-    multiple consecutive empty lines to prevent empty grey boxes.
+    when Claude's tool use blocks can't be rendered. Also removes
+    empty code blocks and collapses consecutive empty lines.
     """
     if not text or UNSUPPORTED_BLOCK_TEXT not in text:
         return text
@@ -102,7 +102,15 @@ def filter_unsupported_blocks(text: str) -> str:
         result.append(line)
         prev_empty = is_empty
 
-    return "\n".join(result)
+    text = "\n".join(result)
+
+    # Remove empty code blocks (``` followed by ``` with only whitespace between)
+    text = re.sub(r"```\w*\s*```", "", text)
+
+    # Clean up any resulting multiple empty lines again
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
 
 
 class PushoverNotifier:

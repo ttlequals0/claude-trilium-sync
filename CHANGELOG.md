@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.3] - 2026-01-19
+
+### Fixed
+- Remove empty code blocks left after filtering unsupported block text
+  - Handles markdown code fences that become empty after text removal
+  - Collapses multiple empty lines to prevent rendering artifacts
+
 ## [1.2.2] - 2026-01-19
 
 ### Fixed
