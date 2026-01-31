@@ -877,7 +877,7 @@ class TriliumSync:
             log.info(f"[TRILIUM] >>> PATCH note {existing_note_id} (update existing)")
             try:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
-                self.ea.patch_note_content(noteId=existing_note_id, content=content)
+                self.ea.update_note_content(noteId=existing_note_id, content=content)
                 log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
                 # Sync attachments for existing note
                 self._sync_attachments(conv, existing_note_id)
