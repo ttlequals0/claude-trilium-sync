@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.4] - 2026-01-30
+
+### Fixed
+- Fix duplicate notes created instead of updating existing ones
+  - Changed `patch_note_content()` to `update_note_content()` for trilium-py compatibility
+  - Updates to existing conversations now correctly modify the existing Trilium note
+
 ## [1.2.3] - 2026-01-19
 
 ### Fixed
