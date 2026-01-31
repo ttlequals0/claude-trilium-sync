@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-01-30
+
+### Added
+- Download actual file content for attachments from Claude API
+  - Attachments with downloadable content are now stored as file-type notes in Trilium
+  - Files preserve original binary content, not just metadata
+  - Falls back to text notes with metadata when content cannot be downloaded
+  - New `get_attachment_content()` method in ClaudeAPI for fetching file data
+
+### Changed
+- `sync_conversation()` and `_sync_attachments()` are now async methods
+- Claude API client is kept open during sync to enable attachment downloads
+- Logging now shows count of attachments downloaded with content
+
 ## [1.2.4] - 2026-01-30
 
 ### Fixed
