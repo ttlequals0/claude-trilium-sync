@@ -410,6 +410,7 @@ class ClaudeAPI:
         self._org_id: Optional[str] = None
         self._flaresolverr_url: Optional[str] = None
         self._cookies: Optional[list] = None
+        self._user_agent: Optional[str] = None
 
     def _get_flaresolverr_url(self) -> str:
         """Get normalized FlareSolverr URL."""
@@ -464,8 +465,11 @@ class ClaudeAPI:
 
         solution = data["solution"]
 
-        # Store cookies for subsequent requests
+        # Store cookies and user-agent for subsequent requests
         self._cookies = solution.get("cookies", [])
+        user_agent = solution.get("userAgent")
+        if user_agent:
+            self._user_agent = user_agent
 
         # Get response details
         response_status = solution.get("status", 0)
@@ -665,8 +669,38 @@ class ClaudeAPI:
             log.warning(f"[CLAUDE API] Failed to download attachment {attachment_id[:8]}: {e}")
             return None
 
+    def _get_cloudflare_cookies(self) -> dict:
+        """Build a cookie dict from stored FlareSolverr cookies for direct requests.
+
+        FlareSolverr cannot download binary files (documented limitation removed
+        in v2.0). Instead, we extract Cloudflare clearance cookies and User-Agent
+        from prior FlareSolverr requests, then use them with httpx directly.
+        """
+        cookie_dict = {"sessionKey": self.session_key}
+        if self._cookies:
+            for cookie in self._cookies:
+                cookie_dict[cookie["name"]] = cookie["value"]
+        return cookie_dict
+
+    async def _ensure_cloudflare_cookies(self):
+        """Ensure we have fresh Cloudflare clearance cookies from FlareSolverr.
+
+        Makes a lightweight API call through FlareSolverr if we don't have
+        cookies or User-Agent stored yet.
+        """
+        if self._cookies and self._user_agent:
+            return
+        # Trigger a FlareSolverr request to get cookies + User-Agent
+        log.info("[CLAUDE API] Priming Cloudflare cookies via FlareSolverr...")
+        await self._get_org_id()
+
     async def get_artifact_file(self, conv_id: str, file_path: str) -> Optional[bytes]:
         """Download a file via the wiggle endpoint (sandbox output files).
+
+        FlareSolverr cannot handle binary downloads (it returns Chrome's HTML
+        download interstitial instead of actual file content). We use the cookie
+        extraction pattern: Cloudflare clearance cookies + User-Agent from prior
+        FlareSolverr requests are used with a direct httpx request.
 
         Args:
             conv_id: The conversation UUID
@@ -675,8 +709,6 @@ class ClaudeAPI:
         Returns:
             Binary content of the file, or None if download failed
         """
-        import base64
-
         org_id = await self._get_org_id()
         encoded_path = quote(file_path, safe="")
         # Note: wiggle endpoint uses 'conversations' not 'chat_conversations'
@@ -687,51 +719,35 @@ class ClaudeAPI:
 
         log.info(f"[CLAUDE API] Downloading artifact file: {file_path}")
 
-        # Try FlareSolverr first (consistent with all other API calls)
-        try:
-            response = await self._flaresolverr_request(wiggle_url)
-            status_code = response.get("status", 0)
-            body = response.get("body", "")
+        # Ensure we have Cloudflare cookies from FlareSolverr
+        await self._ensure_cloudflare_cookies()
 
-            if status_code == 200 and body:
-                # Try base64 decode (FlareSolverr may encode binary content)
-                if body and not body.startswith(("<", "{")):
-                    try:
-                        decoded = base64.b64decode(body)
-                        log.info(f"[CLAUDE API] Downloaded artifact via FlareSolverr (base64): {len(decoded)} bytes")
-                        return decoded
-                    except Exception:
-                        pass
+        # Direct httpx request with Cloudflare cookies + User-Agent
+        cookies = self._get_cloudflare_cookies()
+        headers = {}
+        if self._user_agent:
+            headers["User-Agent"] = self._user_agent
 
-                # Return as-is (text content)
-                if isinstance(body, str):
-                    log.info(f"[CLAUDE API] Downloaded artifact via FlareSolverr (text): {len(body)} bytes")
-                    return body.encode("utf-8")
-                return body
-
-            log.warning(f"[CLAUDE API] FlareSolverr returned status {status_code} for wiggle endpoint")
-
-        except Exception as e:
-            log.warning(f"[CLAUDE API] FlareSolverr failed for wiggle endpoint: {e}")
-
-        # Fallback: direct httpx request with session cookie
-        log.info(f"[CLAUDE API] Falling back to direct request for artifact file")
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.get(
                     wiggle_url,
-                    cookies={"sessionKey": self.session_key},
+                    cookies=cookies,
+                    headers=headers,
                     timeout=30.0,
                     follow_redirects=True,
                 )
                 if resp.status_code == 200:
                     content = resp.content
-                    log.info(f"[CLAUDE API] Downloaded artifact via direct request: {len(content)} bytes")
+                    log.info(f"[CLAUDE API] Downloaded artifact file: {len(content)} bytes")
                     return content
                 else:
-                    log.warning(f"[CLAUDE API] Direct request returned status {resp.status_code}")
+                    log.warning(
+                        f"[CLAUDE API] Wiggle endpoint returned status {resp.status_code} "
+                        f"for {file_path}"
+                    )
         except Exception as e:
-            log.warning(f"[CLAUDE API] Direct request failed for artifact file: {e}")
+            log.warning(f"[CLAUDE API] Failed to download artifact file {file_path}: {e}")
 
         return None
 
@@ -866,6 +882,59 @@ class TriliumSync:
 
         log.info(f"[TRILIUM] Parent note ready: '{self.parent_note_title}' ({self._resolved_parent_id})")
         return self._resolved_parent_id
+
+    def _create_file_note(
+        self,
+        parent_note_id: str,
+        title: str,
+        file_content: bytes,
+        mime: str = "application/octet-stream",
+    ) -> dict:
+        """Create a file-type note with binary content using two-step ETAPI approach.
+
+        trilium-py's create_note() sends JSON which can't serialize bytes.
+        Instead we: 1) create the note with placeholder string content,
+        2) PUT the actual binary content via the ETAPI content endpoint.
+
+        Args:
+            parent_note_id: Parent note ID
+            title: Note title
+            file_content: Raw binary content
+            mime: MIME type for the file
+
+        Returns:
+            The create_note result dict
+
+        Raises:
+            ValueError: If binary content upload fails
+        """
+        import requests as req
+
+        # Step 1: Create note with placeholder string content
+        result = self.ea.create_note(
+            parentNoteId=parent_note_id,
+            title=title,
+            type="file",
+            mime=mime,
+            content="placeholder",
+        )
+        note_id = result["note"]["noteId"]
+
+        # Step 2: Upload actual binary content via PUT
+        url = f"{self.trilium_url}/etapi/notes/{note_id}/content"
+        resp = req.put(
+            url,
+            data=file_content,
+            headers={
+                "content-type": "application/octet-stream",
+                "Content-Transfer-Encoding": "binary",
+                "Authorization": self.ea.token,
+            },
+        )
+        if resp.status_code != 204:
+            raise ValueError(f"Failed to upload binary content: HTTP {resp.status_code}")
+
+        return result
 
     def _escape_html(self, text: str) -> str:
         """Escape HTML special characters."""
@@ -1053,14 +1122,14 @@ class TriliumSync:
         # Determine note type based on whether we have file content
         if file_content:
             # Create a file-type note with the actual binary content
+            mime = file_type if file_type != "unknown" else "application/octet-stream"
             log.info(f"[TRILIUM] >>> CREATE file note '{file_name}' under {parent_note_id} ({len(file_content)} bytes)")
             try:
-                result = self.ea.create_note(
-                    parentNoteId=parent_note_id,
+                result = self._create_file_note(
+                    parent_note_id=parent_note_id,
                     title=file_name,
-                    type="file",
-                    content=file_content,
-                    mime=file_type if file_type != "unknown" else "application/octet-stream",
+                    file_content=file_content,
+                    mime=mime,
                 )
                 note_id = result["note"]["noteId"]
 
@@ -1212,14 +1281,13 @@ class TriliumSync:
                 log.warning(f"[TRILIUM] <<< Failed to create code artifact note: {e}")
                 return None
         else:
-            # Binary content: create a file-type note
+            # Binary content: create a file-type note (two-step ETAPI approach)
             log.info(f"[TRILIUM] >>> CREATE file artifact note '{file_name}' under {parent_note_id} ({len(file_content)} bytes)")
             try:
-                result = self.ea.create_note(
-                    parentNoteId=parent_note_id,
+                result = self._create_file_note(
+                    parent_note_id=parent_note_id,
                     title=f"[Artifact] {file_name}",
-                    type="file",
-                    content=file_content,
+                    file_content=file_content,
                     mime=mime,
                 )
                 note_id = result["note"]["noteId"]

@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-02-17
+
+### Fixed
+- Fix binary file downloads returning 325-byte HTML instead of actual file content
+  - FlareSolverr cannot handle binary/octet-stream downloads (documented limitation since v2.0)
+  - Artifact downloads now use direct httpx with Cloudflare clearance cookies extracted from prior FlareSolverr requests
+  - User-Agent from FlareSolverr is captured and reused to satisfy Cloudflare validation
+- Fix "Object of type bytes is not JSON serializable" when creating file-type notes in Trilium
+  - trilium-py's `create_note()` sends JSON which cannot serialize bytes
+  - New `_create_file_note()` helper uses two-step ETAPI approach: create note with placeholder, then PUT binary content
+  - Fixes both attachment and artifact file-type note creation
+
 ## [1.5.0] - 2026-02-17
 
 ### Changed
