@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.0] - 2026-02-17
+
+### Changed
+- Rewrote artifact extraction to use `files_v2` field instead of parsing `<antArtifact>` XML tags
+  - Claude API does not include artifact XML tags in message text, even with `rendering_mode=raw`
+  - Artifacts (sandbox output files) are now discovered via the `files_v2` field on each message
+  - Artifact files are downloaded via the wiggle endpoint (`/wiggle/download-file`)
+  - Text-based artifacts (.py, .md, .html, etc.) are saved as code-type notes in Trilium
+  - Binary artifacts are saved as file-type notes with proper MIME types
+  - Artifacts are identified by `file_uuid` for deduplication (replaces XML `identifier`)
+  - New label `claudeArtifactPath` stores the original sandbox path for reference
+
+### Added
+- `get_artifact_file()` method on `ClaudeAPI` for downloading files via wiggle endpoint
+  - Tries FlareSolverr first, falls back to direct httpx request with session cookie
+- `get_mime_from_filename()` helper to determine MIME type from file extension
+- `is_text_file()` helper to distinguish text vs binary artifact files
+
+### Removed
+- `parse_artifacts()` function (no longer needed; artifacts are not in message text)
+- `strip_artifact_tags()` function and its call in `_format_message_content()`
+- `rendering_mode=raw` query parameter from `get_conversation()` endpoint
+- Diagnostic logging added in v1.4.2 (no longer needed after root cause identified)
+
 ## [1.4.2] - 2026-02-17
 
 ### Fixed
