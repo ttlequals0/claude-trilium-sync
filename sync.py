@@ -607,7 +607,7 @@ class ClaudeAPI:
         org_id = await self._get_org_id()
         try:
             result = await self._api_request(
-                f"/organizations/{org_id}/chat_conversations/{conv_id}"
+                f"/organizations/{org_id}/chat_conversations/{conv_id}?rendering_mode=raw"
             )
             msg_count = len(result.get("chat_messages", []))
             log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages")
@@ -1239,6 +1239,17 @@ class TriliumSync:
             parent_note_id: The Trilium note ID to create artifact notes under
         """
         messages = conv.get("chat_messages", [])
+
+        # Debug: check if any messages contain artifact tags
+        msgs_with_artifacts = sum(
+            1 for m in messages if "<antArtifact" in m.get("text", "")
+        )
+        if msgs_with_artifacts > 0:
+            conv_id = conv.get("uuid", "")[:8]
+            log.info(
+                f"[TRILIUM] Conversation {conv_id}... has {msgs_with_artifacts} "
+                f"message(s) containing antArtifact tags"
+            )
 
         # Get existing artifact notes to avoid duplicates
         existing_artifacts = self._get_existing_artifact_notes(parent_note_id)

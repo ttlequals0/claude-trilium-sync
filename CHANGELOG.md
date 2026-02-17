@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.1] - 2026-02-17
+
+### Fixed
+- Add `rendering_mode=raw` query parameter to `get_conversation()` API call
+  - Claude API strips `<antArtifact>` XML tags from message text by default
+  - Without `rendering_mode=raw`, artifact extraction found zero artifacts across all conversations
+  - The raw rendering mode returns the original model output with artifact tags inline
+- Add debug logging to confirm artifact tag presence in message text after fix
+
 ## [1.4.0] - 2026-02-17
 
 ### Added
