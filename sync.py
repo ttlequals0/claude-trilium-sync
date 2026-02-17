@@ -113,6 +113,179 @@ def filter_unsupported_blocks(text: str) -> str:
     return text.strip()
 
 
+def parse_artifacts(text: str) -> list[dict]:
+    """Parse antArtifact/artifact XML tags from message text.
+
+    Claude.ai embeds artifacts inline in the message text as XML tags like:
+        <antArtifact identifier="..." type="..." title="..." language="...">
+            content here
+        </antArtifact>
+
+    Returns a list of dicts with keys: identifier, type, title, language, content.
+    """
+    if not text:
+        return []
+
+    artifacts = []
+
+    # Match both <antArtifact> and <artifact> tag variants
+    pattern = re.compile(
+        r'<(?:ant[Aa]rtifact|antartifact|artifact)\s+'
+        r'(?P<attrs>[^>]*?)>'
+        r'(?P<content>.*?)'
+        r'</(?:ant[Aa]rtifact|antartifact|artifact)>',
+        re.DOTALL | re.IGNORECASE,
+    )
+
+    for match in pattern.finditer(text):
+        attrs_str = match.group("attrs")
+        content = match.group("content").strip()
+
+        # Parse attributes
+        def get_attr(name: str) -> str:
+            attr_match = re.search(rf'{name}\s*=\s*"([^"]*)"', attrs_str)
+            return attr_match.group(1) if attr_match else ""
+
+        artifact = {
+            "identifier": get_attr("identifier"),
+            "type": get_attr("type"),
+            "title": get_attr("title"),
+            "language": get_attr("language"),
+            "content": content,
+        }
+        artifacts.append(artifact)
+
+    return artifacts
+
+
+def strip_artifact_tags(text: str) -> str:
+    """Replace artifact XML tags with a placeholder reference in the message text."""
+    if not text:
+        return text
+
+    def replacer(match):
+        attrs_str = match.group(1)
+        title_match = re.search(r'title\s*=\s*"([^"]*)"', attrs_str)
+        title = title_match.group(1) if title_match else "Artifact"
+        return f"\n\n[Artifact: {title}]\n\n"
+
+    text = re.sub(
+        r'<(?:ant[Aa]rtifact|antartifact|artifact)\s+([^>]*?)>.*?</(?:ant[Aa]rtifact|antartifact|artifact)>',
+        replacer,
+        text,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return text
+
+
+# Map artifact type to file extension
+ARTIFACT_TYPE_EXTENSIONS = {
+    "application/vnd.ant.react": ".jsx",
+    "application/vnd.ant.code": "",  # uses language attr
+    "text/markdown": ".md",
+    "text/html": ".html",
+    "image/svg+xml": ".svg",
+    "application/vnd.ant.mermaid": ".mermaid",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
+    "application/json": ".json",
+    "application/xml": ".xml",
+    "application/x-latex": ".tex",
+    "text/vnd.graphviz": ".dot",
+}
+
+# Map language attribute to file extension
+LANGUAGE_EXTENSIONS = {
+    "python": ".py",
+    "javascript": ".js",
+    "typescript": ".ts",
+    "jsx": ".jsx",
+    "tsx": ".tsx",
+    "java": ".java",
+    "c": ".c",
+    "cpp": ".cpp",
+    "c++": ".cpp",
+    "csharp": ".cs",
+    "c#": ".cs",
+    "go": ".go",
+    "rust": ".rs",
+    "ruby": ".rb",
+    "php": ".php",
+    "swift": ".swift",
+    "kotlin": ".kt",
+    "scala": ".scala",
+    "shell": ".sh",
+    "bash": ".sh",
+    "sql": ".sql",
+    "yaml": ".yaml",
+    "yml": ".yaml",
+    "toml": ".toml",
+    "html": ".html",
+    "css": ".css",
+    "scss": ".scss",
+    "lua": ".lua",
+    "r": ".r",
+    "perl": ".pl",
+    "haskell": ".hs",
+    "elixir": ".ex",
+    "clojure": ".clj",
+    "dart": ".dart",
+    "zig": ".zig",
+    "dockerfile": ".Dockerfile",
+    "makefile": ".Makefile",
+    "graphql": ".graphql",
+    "proto": ".proto",
+    "terraform": ".tf",
+    "nix": ".nix",
+}
+
+
+def get_artifact_extension(artifact: dict) -> str:
+    """Determine file extension for an artifact based on type and language."""
+    art_type = artifact.get("type", "")
+    language = artifact.get("language", "").lower()
+
+    # For code type, prefer language-based extension
+    if art_type == "application/vnd.ant.code" and language:
+        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
+
+    # Otherwise use type-based extension
+    ext = ARTIFACT_TYPE_EXTENSIONS.get(art_type, "")
+    if ext:
+        return ext
+
+    # Fallback: try language if available
+    if language:
+        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
+
+    return ".txt"
+
+
+def get_artifact_mime(artifact: dict) -> str:
+    """Determine MIME type for an artifact for Trilium file notes."""
+    art_type = artifact.get("type", "")
+    language = artifact.get("language", "").lower()
+
+    # Direct MIME types
+    if art_type in ("text/html", "text/markdown", "text/plain", "text/csv",
+                     "application/json", "application/xml", "image/svg+xml"):
+        return art_type
+
+    # Code types
+    if art_type in ("application/vnd.ant.code", "application/vnd.ant.react"):
+        if art_type == "application/vnd.ant.react":
+            return "application/javascript"
+        if language in ("python",):
+            return "text/x-python"
+        if language in ("javascript", "jsx"):
+            return "application/javascript"
+        if language in ("typescript", "tsx"):
+            return "application/typescript"
+        return "text/plain"
+
+    return "text/plain"
+
+
 class PushoverNotifier:
     """Send notifications via Pushover."""
 
@@ -698,6 +871,7 @@ class TriliumSync:
     def _format_message_content(self, text: str) -> str:
         """Format message content with markdown to HTML conversion."""
         text = filter_unsupported_blocks(text)
+        text = strip_artifact_tags(text)
         text = self._escape_html(text)
 
         # Code blocks with language
@@ -925,6 +1099,193 @@ class TriliumSync:
             log.debug(f"Failed to search for existing attachments: {e}")
         return {}
 
+    def _create_artifact_note(
+        self,
+        parent_note_id: str,
+        artifact: dict,
+        msg_index: int,
+        art_index: int,
+    ) -> Optional[str]:
+        """Create a child note for an artifact under the conversation note.
+
+        Args:
+            parent_note_id: The conversation note ID to attach to
+            artifact: Parsed artifact dict with identifier, type, title, language, content
+            msg_index: Index of the message containing this artifact
+            art_index: Index of this artifact within the message
+
+        Returns:
+            The created note ID, or None if creation failed
+        """
+        identifier = artifact.get("identifier", f"artifact-{msg_index}-{art_index}")
+        art_type = artifact.get("type", "")
+        title = artifact.get("title", identifier)
+        language = artifact.get("language", "")
+        content = artifact.get("content", "")
+
+        if not content:
+            log.debug(f"[TRILIUM] Skipping empty artifact: {identifier}")
+            return None
+
+        ext = get_artifact_extension(artifact)
+        mime = get_artifact_mime(artifact)
+        file_name = f"{identifier}{ext}"
+
+        # Create as a file-type note with the artifact content
+        log.info(f"[TRILIUM] >>> CREATE artifact note '{title}' ({file_name}) under {parent_note_id}")
+        try:
+            result = self.ea.create_note(
+                parentNoteId=parent_note_id,
+                title=f"[Artifact] {title}",
+                type="code",
+                mime=mime,
+                content=content,
+            )
+            note_id = result["note"]["noteId"]
+
+            # Add labels to identify this as an artifact
+            self.ea.create_attribute(
+                noteId=note_id,
+                type="label",
+                name="claudeArtifact",
+                value="",
+                isInheritable=False,
+            )
+            self.ea.create_attribute(
+                noteId=note_id,
+                type="label",
+                name="claudeArtifactId",
+                value=identifier,
+                isInheritable=False,
+            )
+            if art_type:
+                self.ea.create_attribute(
+                    noteId=note_id,
+                    type="label",
+                    name="claudeArtifactType",
+                    value=art_type,
+                    isInheritable=False,
+                )
+            if language:
+                self.ea.create_attribute(
+                    noteId=note_id,
+                    type="label",
+                    name="claudeArtifactLanguage",
+                    value=language,
+                    isInheritable=False,
+                )
+            self.ea.create_attribute(
+                noteId=note_id,
+                type="label",
+                name="originalFileName",
+                value=file_name,
+                isInheritable=False,
+            )
+
+            log.info(f"[TRILIUM] <<< Created artifact note: {note_id} ({file_name})")
+            return note_id
+        except Exception as e:
+            log.warning(f"[TRILIUM] <<< Failed to create artifact note: {e}")
+            return None
+
+    def _get_existing_artifact_notes(self, parent_note_id: str) -> dict:
+        """Get existing artifact child notes for a conversation.
+
+        Returns:
+            Dict mapping artifact identifier to note_id
+        """
+        try:
+            results = self.ea.search_note(
+                search=f"#claudeArtifact note.parents.noteId={parent_note_id}"
+            )
+            if results and results.get("results"):
+                existing = {}
+                for note in results["results"]:
+                    note_id = note["noteId"]
+                    # Try to get the artifact identifier from attributes
+                    try:
+                        attrs = self.ea.get_note(note_id)
+                        if attrs:
+                            for attr in attrs.get("attributes", []):
+                                if attr.get("name") == "claudeArtifactId":
+                                    existing[attr["value"]] = note_id
+                                    break
+                            else:
+                                # Fallback: use title
+                                title = note.get("title", "")
+                                if title.startswith("[Artifact] "):
+                                    existing[title[11:]] = note_id
+                    except Exception:
+                        title = note.get("title", "")
+                        if title.startswith("[Artifact] "):
+                            existing[title[11:]] = note_id
+                return existing
+        except Exception as e:
+            log.debug(f"Failed to search for existing artifacts: {e}")
+        return {}
+
+    def _sync_artifacts(
+        self,
+        conv: dict,
+        parent_note_id: str,
+    ):
+        """Extract and sync all artifacts from conversation messages as child notes.
+
+        Parses antArtifact XML tags from message text and creates code-type
+        child notes in Trilium with the artifact content.
+
+        Args:
+            conv: The conversation dict
+            parent_note_id: The Trilium note ID to create artifact notes under
+        """
+        messages = conv.get("chat_messages", [])
+
+        # Get existing artifact notes to avoid duplicates
+        existing_artifacts = self._get_existing_artifact_notes(parent_note_id)
+
+        artifact_count = 0
+        skipped_count = 0
+        updated_count = 0
+
+        for msg_index, msg in enumerate(messages):
+            text = msg.get("text", "")
+            if not text:
+                continue
+
+            artifacts = parse_artifacts(text)
+            if not artifacts:
+                continue
+
+            for art_index, artifact in enumerate(artifacts):
+                identifier = artifact.get("identifier", "")
+                if not identifier:
+                    identifier = f"artifact-{msg_index}-{art_index}"
+
+                # Check if artifact already exists
+                if identifier in existing_artifacts:
+                    # Update existing artifact content
+                    existing_note_id = existing_artifacts[identifier]
+                    try:
+                        self.ea.update_note_content(
+                            noteId=existing_note_id, content=artifact["content"]
+                        )
+                        log.debug(f"[TRILIUM] Updated existing artifact: {identifier}")
+                        updated_count += 1
+                    except Exception as e:
+                        log.warning(f"[TRILIUM] Failed to update artifact {identifier}: {e}")
+                    continue
+
+                self._create_artifact_note(
+                    parent_note_id, artifact, msg_index, art_index
+                )
+                artifact_count += 1
+
+        if artifact_count > 0 or skipped_count > 0 or updated_count > 0:
+            log.info(
+                f"[TRILIUM] Artifacts: {artifact_count} created, "
+                f"{updated_count} updated, {skipped_count} skipped"
+            )
+
     async def _sync_attachments(
         self,
         conv: dict,
@@ -1014,8 +1375,9 @@ class TriliumSync:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
                 self.ea.update_note_content(noteId=existing_note_id, content=content)
                 log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
-                # Sync attachments for existing note
+                # Sync attachments and artifacts for existing note
                 await self._sync_attachments(conv, existing_note_id, claude_api)
+                self._sync_artifacts(conv, existing_note_id)
                 return existing_note_id
             except Exception as e:
                 log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
@@ -1056,8 +1418,9 @@ class TriliumSync:
         )
         log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
-        # Sync attachments for new note
+        # Sync attachments and artifacts for new note
         await self._sync_attachments(conv, note_id, claude_api)
+        self._sync_artifacts(conv, note_id)
 
         log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id

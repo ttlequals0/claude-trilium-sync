@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.0] - 2026-02-17
+
+### Added
+- Artifact extraction and sync from Claude conversations
+  - Parses `<antArtifact>` XML tags embedded in Claude's message text
+  - Each artifact is saved as a code-type child note under the conversation
+  - Artifacts preserve original content with proper MIME types and file extensions
+  - Supports all artifact types: React (`.jsx`), HTML, Markdown, SVG, Mermaid, code in 40+ languages
+  - Artifacts are labeled with `claudeArtifact`, `claudeArtifactId`, `claudeArtifactType`, and `claudeArtifactLanguage`
+  - Existing artifacts are updated in-place on re-sync (matched by identifier)
+  - Artifact XML tags are replaced with `[Artifact: title]` placeholders in the conversation HTML
+  - New helper functions: `parse_artifacts()`, `strip_artifact_tags()`, `get_artifact_extension()`, `get_artifact_mime()`
+
 ## [1.3.0] - 2026-01-30
 
 ### Added
