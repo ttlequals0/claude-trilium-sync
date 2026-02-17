@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.4.2] - 2026-02-17
+
+### Fixed
+- Add diagnostic logging to inspect message structure from Claude API
+  - Logs all message keys to identify where artifact data is stored
+  - Logs non-standard fields (content blocks, metadata) with type info
+  - Logs all conversation response keys (previously truncated at 10)
+  - Will reveal whether artifacts are in `content` blocks, a separate field, or elsewhere
+
 ## [1.4.1] - 2026-02-17
 
 ### Fixed

@@ -610,7 +610,8 @@ class ClaudeAPI:
                 f"/organizations/{org_id}/chat_conversations/{conv_id}?rendering_mode=raw"
             )
             msg_count = len(result.get("chat_messages", []))
-            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages")
+            all_keys = sorted(result.keys())
+            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages, keys: {all_keys}")
             return result
         except Exception as e:
             log.warning(f"[CLAUDE API] Failed to fetch conversation {conv_id}: {e}")
@@ -1240,16 +1241,48 @@ class TriliumSync:
         """
         messages = conv.get("chat_messages", [])
 
-        # Debug: check if any messages contain artifact tags
-        msgs_with_artifacts = sum(
-            1 for m in messages if "<antArtifact" in m.get("text", "")
-        )
-        if msgs_with_artifacts > 0:
-            conv_id = conv.get("uuid", "")[:8]
-            log.info(
-                f"[TRILIUM] Conversation {conv_id}... has {msgs_with_artifacts} "
-                f"message(s) containing antArtifact tags"
+        # Debug: log message structure to identify where artifacts live
+        conv_id = conv.get("uuid", "")[:8]
+        if messages:
+            sample_msg = messages[0]
+            msg_keys = sorted(sample_msg.keys())
+            log.info(f"[TRILIUM] Conversation {conv_id}... message keys: {msg_keys}")
+
+            # Log any non-standard fields that might contain artifacts
+            for key in msg_keys:
+                if key not in ("text", "sender", "uuid", "created_at", "updated_at",
+                               "attachments", "index", "truncated"):
+                    val = sample_msg[key]
+                    val_type = type(val).__name__
+                    if isinstance(val, list):
+                        log.info(f"[TRILIUM]   {key}: list[{len(val)}]"
+                                 f"{' - item keys: ' + str(sorted(val[0].keys())) if val and isinstance(val[0], dict) else ''}")
+                    elif isinstance(val, dict):
+                        log.info(f"[TRILIUM]   {key}: dict keys={sorted(val.keys())}")
+                    elif isinstance(val, str) and len(val) > 100:
+                        log.info(f"[TRILIUM]   {key}: str[{len(val)}] = {val[:100]}...")
+                    else:
+                        log.info(f"[TRILIUM]   {key}: {val_type} = {val}")
+
+            # Check all messages for antArtifact tags in text
+            msgs_with_artifacts = sum(
+                1 for m in messages if "<antArtifact" in m.get("text", "")
             )
+            if msgs_with_artifacts > 0:
+                log.info(
+                    f"[TRILIUM] Conversation {conv_id}... has {msgs_with_artifacts} "
+                    f"message(s) containing antArtifact tags"
+                )
+
+            # Check for content blocks (newer API format)
+            msgs_with_content = sum(
+                1 for m in messages if "content" in m and isinstance(m["content"], list)
+            )
+            if msgs_with_content > 0:
+                log.info(
+                    f"[TRILIUM] Conversation {conv_id}... has {msgs_with_content} "
+                    f"message(s) with content blocks"
+                )
 
         # Get existing artifact notes to avoid duplicates
         existing_artifacts = self._get_existing_artifact_notes(parent_note_id)
