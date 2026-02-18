@@ -2,6 +2,73 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.5.1] - 2026-02-17
+
+### Fixed
+- Fix binary file downloads returning 325-byte HTML instead of actual file content
+  - FlareSolverr cannot handle binary/octet-stream downloads (documented limitation since v2.0)
+  - Artifact downloads now use direct httpx with Cloudflare clearance cookies extracted from prior FlareSolverr requests
+  - User-Agent from FlareSolverr is captured and reused to satisfy Cloudflare validation
+- Fix "Object of type bytes is not JSON serializable" when creating file-type notes in Trilium
+  - trilium-py's `create_note()` sends JSON which cannot serialize bytes
+  - New `_create_file_note()` helper uses two-step ETAPI approach: create note with placeholder, then PUT binary content
+  - Fixes both attachment and artifact file-type note creation
+
+## [1.5.0] - 2026-02-17
+
+### Changed
+- Rewrote artifact extraction to use `files_v2` field instead of parsing `<antArtifact>` XML tags
+  - Claude API does not include artifact XML tags in message text, even with `rendering_mode=raw`
+  - Artifacts (sandbox output files) are now discovered via the `files_v2` field on each message
+  - Artifact files are downloaded via the wiggle endpoint (`/wiggle/download-file`)
+  - Text-based artifacts (.py, .md, .html, etc.) are saved as code-type notes in Trilium
+  - Binary artifacts are saved as file-type notes with proper MIME types
+  - Artifacts are identified by `file_uuid` for deduplication (replaces XML `identifier`)
+  - New label `claudeArtifactPath` stores the original sandbox path for reference
+
+### Added
+- `get_artifact_file()` method on `ClaudeAPI` for downloading files via wiggle endpoint
+  - Tries FlareSolverr first, falls back to direct httpx request with session cookie
+- `get_mime_from_filename()` helper to determine MIME type from file extension
+- `is_text_file()` helper to distinguish text vs binary artifact files
+
+### Removed
+- `parse_artifacts()` function (no longer needed; artifacts are not in message text)
+- `strip_artifact_tags()` function and its call in `_format_message_content()`
+- `rendering_mode=raw` query parameter from `get_conversation()` endpoint
+- Diagnostic logging added in v1.4.2 (no longer needed after root cause identified)
+
+## [1.4.2] - 2026-02-17
+
+### Fixed
+- Add diagnostic logging to inspect message structure from Claude API
+  - Logs all message keys to identify where artifact data is stored
+  - Logs non-standard fields (content blocks, metadata) with type info
+  - Logs all conversation response keys (previously truncated at 10)
+  - Will reveal whether artifacts are in `content` blocks, a separate field, or elsewhere
+
+## [1.4.1] - 2026-02-17
+
+### Fixed
+- Add `rendering_mode=raw` query parameter to `get_conversation()` API call
+  - Claude API strips `<antArtifact>` XML tags from message text by default
+  - Without `rendering_mode=raw`, artifact extraction found zero artifacts across all conversations
+  - The raw rendering mode returns the original model output with artifact tags inline
+- Add debug logging to confirm artifact tag presence in message text after fix
+
+## [1.4.0] - 2026-02-17
+
+### Added
+- Artifact extraction and sync from Claude conversations
+  - Parses `<antArtifact>` XML tags embedded in Claude's message text
+  - Each artifact is saved as a code-type child note under the conversation
+  - Artifacts preserve original content with proper MIME types and file extensions
+  - Supports all artifact types: React (`.jsx`), HTML, Markdown, SVG, Mermaid, code in 40+ languages
+  - Artifacts are labeled with `claudeArtifact`, `claudeArtifactId`, `claudeArtifactType`, and `claudeArtifactLanguage`
+  - Existing artifacts are updated in-place on re-sync (matched by identifier)
+  - Artifact XML tags are replaced with `[Artifact: title]` placeholders in the conversation HTML
+  - New helper functions: `parse_artifacts()`, `strip_artifact_tags()`, `get_artifact_extension()`, `get_artifact_mime()`
+
 ## [1.3.0] - 2026-01-30
 
 ### Added

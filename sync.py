@@ -29,6 +29,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import mimetypes
 import os
 import re
 import sys
@@ -36,6 +37,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 
 import httpx
 from trilium_py.client import ETAPI
@@ -111,6 +113,173 @@ def filter_unsupported_blocks(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
+
+
+# Map artifact type to file extension
+ARTIFACT_TYPE_EXTENSIONS = {
+    "application/vnd.ant.react": ".jsx",
+    "application/vnd.ant.code": "",  # uses language attr
+    "text/markdown": ".md",
+    "text/html": ".html",
+    "image/svg+xml": ".svg",
+    "application/vnd.ant.mermaid": ".mermaid",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
+    "application/json": ".json",
+    "application/xml": ".xml",
+    "application/x-latex": ".tex",
+    "text/vnd.graphviz": ".dot",
+}
+
+# Map language attribute to file extension
+LANGUAGE_EXTENSIONS = {
+    "python": ".py",
+    "javascript": ".js",
+    "typescript": ".ts",
+    "jsx": ".jsx",
+    "tsx": ".tsx",
+    "java": ".java",
+    "c": ".c",
+    "cpp": ".cpp",
+    "c++": ".cpp",
+    "csharp": ".cs",
+    "c#": ".cs",
+    "go": ".go",
+    "rust": ".rs",
+    "ruby": ".rb",
+    "php": ".php",
+    "swift": ".swift",
+    "kotlin": ".kt",
+    "scala": ".scala",
+    "shell": ".sh",
+    "bash": ".sh",
+    "sql": ".sql",
+    "yaml": ".yaml",
+    "yml": ".yaml",
+    "toml": ".toml",
+    "html": ".html",
+    "css": ".css",
+    "scss": ".scss",
+    "lua": ".lua",
+    "r": ".r",
+    "perl": ".pl",
+    "haskell": ".hs",
+    "elixir": ".ex",
+    "clojure": ".clj",
+    "dart": ".dart",
+    "zig": ".zig",
+    "dockerfile": ".Dockerfile",
+    "makefile": ".Makefile",
+    "graphql": ".graphql",
+    "proto": ".proto",
+    "terraform": ".tf",
+    "nix": ".nix",
+}
+
+
+def get_artifact_extension(artifact: dict) -> str:
+    """Determine file extension for an artifact based on type and language."""
+    art_type = artifact.get("type", "")
+    language = artifact.get("language", "").lower()
+
+    # For code type, prefer language-based extension
+    if art_type == "application/vnd.ant.code" and language:
+        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
+
+    # Otherwise use type-based extension
+    ext = ARTIFACT_TYPE_EXTENSIONS.get(art_type, "")
+    if ext:
+        return ext
+
+    # Fallback: try language if available
+    if language:
+        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
+
+    return ".txt"
+
+
+def get_artifact_mime(artifact: dict) -> str:
+    """Determine MIME type for an artifact for Trilium file notes."""
+    art_type = artifact.get("type", "")
+    language = artifact.get("language", "").lower()
+
+    # Direct MIME types
+    if art_type in ("text/html", "text/markdown", "text/plain", "text/csv",
+                     "application/json", "application/xml", "image/svg+xml"):
+        return art_type
+
+    # Code types
+    if art_type in ("application/vnd.ant.code", "application/vnd.ant.react"):
+        if art_type == "application/vnd.ant.react":
+            return "application/javascript"
+        if language in ("python",):
+            return "text/x-python"
+        if language in ("javascript", "jsx"):
+            return "application/javascript"
+        if language in ("typescript", "tsx"):
+            return "application/typescript"
+        return "text/plain"
+
+    return "text/plain"
+
+
+# Extensions that should be treated as text content (code notes in Trilium)
+TEXT_EXTENSIONS = {
+    ".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".c", ".cpp", ".cs",
+    ".go", ".rs", ".rb", ".php", ".swift", ".kt", ".scala", ".sh",
+    ".sql", ".yaml", ".yml", ".toml", ".html", ".css", ".scss",
+    ".lua", ".r", ".pl", ".hs", ".ex", ".clj", ".dart", ".zig",
+    ".md", ".txt", ".csv", ".json", ".xml", ".tex", ".dot",
+    ".graphql", ".proto", ".tf", ".nix", ".svg", ".mermaid",
+    ".Dockerfile", ".Makefile", ".ini", ".cfg", ".conf", ".env",
+    ".gitignore", ".dockerignore", ".editorconfig",
+}
+
+
+def get_mime_from_filename(filename: str) -> str:
+    """Determine MIME type from a file name's extension.
+
+    Uses Python's mimetypes module with fallback to the LANGUAGE_EXTENSIONS
+    map for code file types.
+    """
+    if not filename:
+        return "application/octet-stream"
+
+    ext = os.path.splitext(filename)[1].lower()
+    if not ext:
+        return "application/octet-stream"
+
+    # Try mimetypes module first
+    mime, _ = mimetypes.guess_type(filename)
+    if mime:
+        return mime
+
+    # Fallback: reverse-lookup from LANGUAGE_EXTENSIONS
+    for lang, lang_ext in LANGUAGE_EXTENSIONS.items():
+        if lang_ext == ext:
+            # Map common languages to MIME types
+            lang_mimes = {
+                "python": "text/x-python",
+                "javascript": "application/javascript",
+                "typescript": "application/typescript",
+                "jsx": "application/javascript",
+                "tsx": "application/typescript",
+                "java": "text/x-java",
+                "rust": "text/x-rust",
+                "go": "text/x-go",
+                "ruby": "text/x-ruby",
+                "shell": "text/x-shellscript",
+                "bash": "text/x-shellscript",
+            }
+            return lang_mimes.get(lang, "text/plain")
+
+    return "application/octet-stream"
+
+
+def is_text_file(filename: str) -> bool:
+    """Check if a filename indicates a text-based file."""
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in TEXT_EXTENSIONS
 
 
 class PushoverNotifier:
@@ -241,6 +410,7 @@ class ClaudeAPI:
         self._org_id: Optional[str] = None
         self._flaresolverr_url: Optional[str] = None
         self._cookies: Optional[list] = None
+        self._user_agent: Optional[str] = None
 
     def _get_flaresolverr_url(self) -> str:
         """Get normalized FlareSolverr URL."""
@@ -295,8 +465,11 @@ class ClaudeAPI:
 
         solution = data["solution"]
 
-        # Store cookies for subsequent requests
+        # Store cookies and user-agent for subsequent requests
         self._cookies = solution.get("cookies", [])
+        user_agent = solution.get("userAgent")
+        if user_agent:
+            self._user_agent = user_agent
 
         # Get response details
         response_status = solution.get("status", 0)
@@ -437,7 +610,8 @@ class ClaudeAPI:
                 f"/organizations/{org_id}/chat_conversations/{conv_id}"
             )
             msg_count = len(result.get("chat_messages", []))
-            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages")
+            all_keys = sorted(result.keys())
+            log.info(f"[CLAUDE API] Conversation {conv_id[:8]}... has {msg_count} messages, keys: {all_keys}")
             return result
         except Exception as e:
             log.warning(f"[CLAUDE API] Failed to fetch conversation {conv_id}: {e}")
@@ -494,6 +668,88 @@ class ClaudeAPI:
         except Exception as e:
             log.warning(f"[CLAUDE API] Failed to download attachment {attachment_id[:8]}: {e}")
             return None
+
+    def _get_cloudflare_cookies(self) -> dict:
+        """Build a cookie dict from stored FlareSolverr cookies for direct requests.
+
+        FlareSolverr cannot download binary files (documented limitation removed
+        in v2.0). Instead, we extract Cloudflare clearance cookies and User-Agent
+        from prior FlareSolverr requests, then use them with httpx directly.
+        """
+        cookie_dict = {"sessionKey": self.session_key}
+        if self._cookies:
+            for cookie in self._cookies:
+                cookie_dict[cookie["name"]] = cookie["value"]
+        return cookie_dict
+
+    async def _ensure_cloudflare_cookies(self):
+        """Ensure we have fresh Cloudflare clearance cookies from FlareSolverr.
+
+        Makes a lightweight API call through FlareSolverr if we don't have
+        cookies or User-Agent stored yet.
+        """
+        if self._cookies and self._user_agent:
+            return
+        # Trigger a FlareSolverr request to get cookies + User-Agent
+        log.info("[CLAUDE API] Priming Cloudflare cookies via FlareSolverr...")
+        await self._get_org_id()
+
+    async def get_artifact_file(self, conv_id: str, file_path: str) -> Optional[bytes]:
+        """Download a file via the wiggle endpoint (sandbox output files).
+
+        FlareSolverr cannot handle binary downloads (it returns Chrome's HTML
+        download interstitial instead of actual file content). We use the cookie
+        extraction pattern: Cloudflare clearance cookies + User-Agent from prior
+        FlareSolverr requests are used with a direct httpx request.
+
+        Args:
+            conv_id: The conversation UUID
+            file_path: The sandbox file path (e.g. /mnt/user-data/outputs/plan.md)
+
+        Returns:
+            Binary content of the file, or None if download failed
+        """
+        org_id = await self._get_org_id()
+        encoded_path = quote(file_path, safe="")
+        # Note: wiggle endpoint uses 'conversations' not 'chat_conversations'
+        wiggle_url = (
+            f"{self.BASE_URL}/api/organizations/{org_id}/conversations/{conv_id}"
+            f"/wiggle/download-file?path={encoded_path}"
+        )
+
+        log.info(f"[CLAUDE API] Downloading artifact file: {file_path}")
+
+        # Ensure we have Cloudflare cookies from FlareSolverr
+        await self._ensure_cloudflare_cookies()
+
+        # Direct httpx request with Cloudflare cookies + User-Agent
+        cookies = self._get_cloudflare_cookies()
+        headers = {}
+        if self._user_agent:
+            headers["User-Agent"] = self._user_agent
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    wiggle_url,
+                    cookies=cookies,
+                    headers=headers,
+                    timeout=30.0,
+                    follow_redirects=True,
+                )
+                if resp.status_code == 200:
+                    content = resp.content
+                    log.info(f"[CLAUDE API] Downloaded artifact file: {len(content)} bytes")
+                    return content
+                else:
+                    log.warning(
+                        f"[CLAUDE API] Wiggle endpoint returned status {resp.status_code} "
+                        f"for {file_path}"
+                    )
+        except Exception as e:
+            log.warning(f"[CLAUDE API] Failed to download artifact file {file_path}: {e}")
+
+        return None
 
     async def get_all_conversations_full(self) -> list[dict]:
         """Get all conversations with full message content."""
@@ -626,6 +882,59 @@ class TriliumSync:
 
         log.info(f"[TRILIUM] Parent note ready: '{self.parent_note_title}' ({self._resolved_parent_id})")
         return self._resolved_parent_id
+
+    def _create_file_note(
+        self,
+        parent_note_id: str,
+        title: str,
+        file_content: bytes,
+        mime: str = "application/octet-stream",
+    ) -> dict:
+        """Create a file-type note with binary content using two-step ETAPI approach.
+
+        trilium-py's create_note() sends JSON which can't serialize bytes.
+        Instead we: 1) create the note with placeholder string content,
+        2) PUT the actual binary content via the ETAPI content endpoint.
+
+        Args:
+            parent_note_id: Parent note ID
+            title: Note title
+            file_content: Raw binary content
+            mime: MIME type for the file
+
+        Returns:
+            The create_note result dict
+
+        Raises:
+            ValueError: If binary content upload fails
+        """
+        import requests as req
+
+        # Step 1: Create note with placeholder string content
+        result = self.ea.create_note(
+            parentNoteId=parent_note_id,
+            title=title,
+            type="file",
+            mime=mime,
+            content="placeholder",
+        )
+        note_id = result["note"]["noteId"]
+
+        # Step 2: Upload actual binary content via PUT
+        url = f"{self.trilium_url}/etapi/notes/{note_id}/content"
+        resp = req.put(
+            url,
+            data=file_content,
+            headers={
+                "content-type": "application/octet-stream",
+                "Content-Transfer-Encoding": "binary",
+                "Authorization": self.ea.token,
+            },
+        )
+        if resp.status_code != 204:
+            raise ValueError(f"Failed to upload binary content: HTTP {resp.status_code}")
+
+        return result
 
     def _escape_html(self, text: str) -> str:
         """Escape HTML special characters."""
@@ -813,14 +1122,14 @@ class TriliumSync:
         # Determine note type based on whether we have file content
         if file_content:
             # Create a file-type note with the actual binary content
+            mime = file_type if file_type != "unknown" else "application/octet-stream"
             log.info(f"[TRILIUM] >>> CREATE file note '{file_name}' under {parent_note_id} ({len(file_content)} bytes)")
             try:
-                result = self.ea.create_note(
-                    parentNoteId=parent_note_id,
+                result = self._create_file_note(
+                    parent_note_id=parent_note_id,
                     title=file_name,
-                    type="file",
-                    content=file_content,
-                    mime=file_type if file_type != "unknown" else "application/octet-stream",
+                    file_content=file_content,
+                    mime=mime,
                 )
                 note_id = result["note"]["noteId"]
 
@@ -925,6 +1234,206 @@ class TriliumSync:
             log.debug(f"Failed to search for existing attachments: {e}")
         return {}
 
+    def _create_artifact_note(
+        self,
+        parent_note_id: str,
+        file_item: dict,
+        file_content: Optional[bytes] = None,
+    ) -> Optional[str]:
+        """Create a child note for a files_v2 artifact under the conversation note.
+
+        Args:
+            parent_note_id: The conversation note ID to attach to
+            file_item: A files_v2 item dict with file_name, file_uuid, path, etc.
+            file_content: Optional downloaded binary content of the file
+
+        Returns:
+            The created note ID, or None if creation failed
+        """
+        file_name = file_item.get("file_name", "unknown")
+        file_uuid = file_item.get("file_uuid", "")
+        sandbox_path = file_item.get("path", "")
+        mime = get_mime_from_filename(file_name)
+
+        if not file_content:
+            log.debug(f"[TRILIUM] Skipping artifact with no content: {file_name}")
+            return None
+
+        # Determine note type: text-based files -> code note, binary -> file note
+        if is_text_file(file_name):
+            # Text content: create a code-type note
+            try:
+                text_content = file_content.decode("utf-8")
+            except UnicodeDecodeError:
+                text_content = file_content.decode("utf-8", errors="replace")
+
+            log.info(f"[TRILIUM] >>> CREATE code artifact note '{file_name}' under {parent_note_id}")
+            try:
+                result = self.ea.create_note(
+                    parentNoteId=parent_note_id,
+                    title=f"[Artifact] {file_name}",
+                    type="code",
+                    mime=mime,
+                    content=text_content,
+                )
+                note_id = result["note"]["noteId"]
+            except Exception as e:
+                log.warning(f"[TRILIUM] <<< Failed to create code artifact note: {e}")
+                return None
+        else:
+            # Binary content: create a file-type note (two-step ETAPI approach)
+            log.info(f"[TRILIUM] >>> CREATE file artifact note '{file_name}' under {parent_note_id} ({len(file_content)} bytes)")
+            try:
+                result = self._create_file_note(
+                    parent_note_id=parent_note_id,
+                    title=f"[Artifact] {file_name}",
+                    file_content=file_content,
+                    mime=mime,
+                )
+                note_id = result["note"]["noteId"]
+            except Exception as e:
+                log.warning(f"[TRILIUM] <<< Failed to create file artifact note: {e}")
+                return None
+
+        # Add labels to identify this as an artifact
+        try:
+            self.ea.create_attribute(
+                noteId=note_id, type="label", name="claudeArtifact",
+                value="", isInheritable=False,
+            )
+            self.ea.create_attribute(
+                noteId=note_id, type="label", name="claudeArtifactId",
+                value=file_uuid, isInheritable=False,
+            )
+            self.ea.create_attribute(
+                noteId=note_id, type="label", name="claudeArtifactPath",
+                value=sandbox_path, isInheritable=False,
+            )
+            self.ea.create_attribute(
+                noteId=note_id, type="label", name="originalFileName",
+                value=file_name, isInheritable=False,
+            )
+        except Exception as e:
+            log.warning(f"[TRILIUM] <<< Failed to add labels to artifact note {note_id}: {e}")
+
+        log.info(f"[TRILIUM] <<< Created artifact note: {note_id} ({file_name})")
+        return note_id
+
+    def _get_existing_artifact_notes(self, parent_note_id: str) -> dict:
+        """Get existing artifact child notes for a conversation.
+
+        Returns:
+            Dict mapping artifact identifier to note_id
+        """
+        try:
+            results = self.ea.search_note(
+                search=f"#claudeArtifact note.parents.noteId={parent_note_id}"
+            )
+            if results and results.get("results"):
+                existing = {}
+                for note in results["results"]:
+                    note_id = note["noteId"]
+                    # Try to get the artifact identifier from attributes
+                    try:
+                        attrs = self.ea.get_note(note_id)
+                        if attrs:
+                            for attr in attrs.get("attributes", []):
+                                if attr.get("name") == "claudeArtifactId":
+                                    existing[attr["value"]] = note_id
+                                    break
+                            else:
+                                # Fallback: use title
+                                title = note.get("title", "")
+                                if title.startswith("[Artifact] "):
+                                    existing[title[11:]] = note_id
+                    except Exception:
+                        title = note.get("title", "")
+                        if title.startswith("[Artifact] "):
+                            existing[title[11:]] = note_id
+                return existing
+        except Exception as e:
+            log.debug(f"Failed to search for existing artifacts: {e}")
+        return {}
+
+    async def _sync_artifacts(
+        self,
+        conv: dict,
+        parent_note_id: str,
+        claude_api: Optional["ClaudeAPI"] = None,
+    ):
+        """Extract and sync artifact files from conversation messages as child notes.
+
+        Iterates through files_v2 on each message to find sandbox output files
+        (Claude-created artifacts) and downloads them via the wiggle endpoint.
+
+        Args:
+            conv: The conversation dict
+            parent_note_id: The Trilium note ID to create artifact notes under
+            claude_api: ClaudeAPI instance for downloading artifact content
+        """
+        messages = conv.get("chat_messages", [])
+        conv_id = conv.get("uuid", "")
+
+        # Collect all artifact files from files_v2 across all messages
+        artifact_files = []
+        for msg in messages:
+            files_v2 = msg.get("files_v2", [])
+            for file_item in files_v2:
+                # Artifacts have a 'path' key; user uploads have preview_url instead
+                if "path" not in file_item:
+                    continue
+                # Skip failed sandbox outputs
+                if not file_item.get("success", False):
+                    continue
+                artifact_files.append(file_item)
+
+        if not artifact_files:
+            return
+
+        log.info(
+            f"[TRILIUM] Conversation {conv_id[:8]}... has "
+            f"{len(artifact_files)} artifact file(s) in files_v2"
+        )
+
+        # Get existing artifact notes to avoid duplicates
+        existing_artifacts = self._get_existing_artifact_notes(parent_note_id)
+
+        artifact_count = 0
+        skipped_count = 0
+        updated_count = 0
+
+        for file_item in artifact_files:
+            file_uuid = file_item.get("file_uuid", "")
+            file_name = file_item.get("file_name", "unknown")
+            file_path = file_item.get("path", "")
+
+            # Check if artifact already exists (by file_uuid)
+            if file_uuid in existing_artifacts:
+                skipped_count += 1
+                log.debug(f"[TRILIUM] Skipping existing artifact: {file_name} ({file_uuid[:8]}...)")
+                continue
+
+            # Download content via wiggle endpoint
+            file_content = None
+            if claude_api and conv_id and file_path:
+                file_content = await claude_api.get_artifact_file(conv_id, file_path)
+
+            if not file_content:
+                log.warning(f"[TRILIUM] Could not download artifact: {file_name}")
+                continue
+
+            note_id = self._create_artifact_note(
+                parent_note_id, file_item, file_content
+            )
+            if note_id:
+                artifact_count += 1
+
+        if artifact_count > 0 or skipped_count > 0 or updated_count > 0:
+            log.info(
+                f"[TRILIUM] Artifacts: {artifact_count} created, "
+                f"{updated_count} updated, {skipped_count} skipped"
+            )
+
     async def _sync_attachments(
         self,
         conv: dict,
@@ -1014,8 +1523,9 @@ class TriliumSync:
                 self.ea.patch_note(noteId=existing_note_id, title=title)
                 self.ea.update_note_content(noteId=existing_note_id, content=content)
                 log.info(f"[TRILIUM] <<< Updated successfully: {title[:50]}")
-                # Sync attachments for existing note
+                # Sync attachments and artifacts for existing note
                 await self._sync_attachments(conv, existing_note_id, claude_api)
+                await self._sync_artifacts(conv, existing_note_id, claude_api)
                 return existing_note_id
             except Exception as e:
                 log.warning(f"[TRILIUM] <<< Failed to update note {existing_note_id}: {e}")
@@ -1056,8 +1566,9 @@ class TriliumSync:
         )
         log.info("[TRILIUM] <<< Attributes created: claudeConversationId, claudeUpdatedAt, claudeChat")
 
-        # Sync attachments for new note
+        # Sync attachments and artifacts for new note
         await self._sync_attachments(conv, note_id, claude_api)
+        await self._sync_artifacts(conv, note_id, claude_api)
 
         log.info(f"[TRILIUM] Successfully synced: {title[:50]}")
         return note_id
