@@ -1424,66 +1424,66 @@ class TriliumSync:
         parent_note_id: str,
         claude_api: Optional["ClaudeAPI"] = None,
     ):
-        """Extract and sync artifact files from conversation messages as child notes.
+        """Sync Claude-generated artifact files as child notes.
 
-        Iterates through files_v2 on each message to find sandbox output files
-        (Claude-created artifacts) and downloads them via the wiggle endpoint.
+        Uses the wiggle/list-files endpoint to discover output files, then
+        downloads each via the wiggle/download-file endpoint.
 
         Args:
             conv: The conversation dict
             parent_note_id: The Trilium note ID to create artifact notes under
-            claude_api: ClaudeAPI instance for downloading artifact content
+            claude_api: ClaudeAPI instance for listing and downloading files
         """
-        messages = conv.get("chat_messages", [])
         conv_id = conv.get("uuid", "")
+        if not claude_api or not conv_id:
+            return
 
-        # Collect all artifact files from files_v2 across all messages
-        artifact_files = []
-        for msg in messages:
-            files_v2 = msg.get("files_v2", [])
-            for file_item in files_v2:
-                # Artifacts have a 'path' key; user uploads have preview_url instead
-                if "path" not in file_item:
-                    continue
-                # Skip failed sandbox outputs
-                if not file_item.get("success", False):
-                    continue
-                artifact_files.append(file_item)
+        # List all files in the conversation sandbox
+        file_list = await claude_api.list_conversation_files(conv_id)
+        if not file_list or not file_list.get("success"):
+            return
 
-        if not artifact_files:
+        # Filter to only output files (Claude-generated artifacts)
+        output_files = [
+            p for p in file_list.get("files", [])
+            if p.startswith("/mnt/user-data/outputs/")
+        ]
+
+        if not output_files:
             return
 
         log.info(
             f"[TRILIUM] Conversation {conv_id[:8]}... has "
-            f"{len(artifact_files)} artifact file(s) in files_v2"
+            f"{len(output_files)} artifact file(s)"
         )
 
-        # Get existing artifact notes to avoid duplicates
+        # Get existing artifact notes to avoid duplicates (keyed by path)
         existing_artifacts = self._get_existing_artifact_notes(parent_note_id)
 
         artifact_count = 0
         skipped_count = 0
-        updated_count = 0
 
-        for file_item in artifact_files:
-            file_uuid = file_item.get("file_uuid", "")
-            file_name = file_item.get("file_name", "unknown")
-            file_path = file_item.get("path", "")
+        for file_path in output_files:
+            file_name = os.path.basename(file_path)
 
-            # Check if artifact already exists (by file_uuid)
-            if file_uuid in existing_artifacts:
+            # Check if artifact already exists (by path)
+            if file_path in existing_artifacts:
                 skipped_count += 1
-                log.debug(f"[TRILIUM] Skipping existing artifact: {file_name} ({file_uuid[:8]}...)")
+                log.debug(f"[TRILIUM] Skipping existing artifact: {file_name}")
                 continue
 
             # Download content via wiggle endpoint
-            file_content = None
-            if claude_api and conv_id and file_path:
-                file_content = await claude_api.get_artifact_file(conv_id, file_path)
-
+            file_content = await claude_api.get_artifact_file(conv_id, file_path)
             if not file_content:
                 log.warning(f"[TRILIUM] Could not download artifact: {file_name}")
                 continue
+
+            # Build file_item dict compatible with _create_artifact_note()
+            file_item = {
+                "file_name": file_name,
+                "file_uuid": file_path,  # Use path as unique ID
+                "path": file_path,
+            }
 
             note_id = self._create_artifact_note(
                 parent_note_id, file_item, file_content
@@ -1491,10 +1491,10 @@ class TriliumSync:
             if note_id:
                 artifact_count += 1
 
-        if artifact_count > 0 or skipped_count > 0 or updated_count > 0:
+        if artifact_count > 0 or skipped_count > 0:
             log.info(
                 f"[TRILIUM] Artifacts: {artifact_count} created, "
-                f"{updated_count} updated, {skipped_count} skipped"
+                f"{skipped_count} skipped"
             )
 
     async def _sync_attachments(
