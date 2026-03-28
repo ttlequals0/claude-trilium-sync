@@ -2,6 +2,25 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-03-28
+
+### Changed
+- Rewrite artifact discovery to use wiggle/list-files endpoint instead of broken files_v2 field
+- Artifacts now discovered by listing all conversation sandbox files and filtering
+  for /mnt/user-data/outputs/ paths (Claude-generated content only)
+- Artifact deduplication now uses file path instead of file_uuid
+
+### Removed
+- Remove all attachment sync code -- user-uploaded files are no longer synced to Trilium
+  - Removed: _sync_attachments(), _create_attachment_note(), _get_existing_attachment_notes()
+  - Removed: get_attachment_content() from ClaudeAPI
+- Remove dead antArtifact XML type mapping code (ARTIFACT_TYPE_EXTENSIONS, get_artifact_extension(), get_artifact_mime())
+- Remove attachment data from content hash computation
+
+### Added
+- New list_conversation_files() method on ClaudeAPI using wiggle/list-files endpoint
+- Supports both new path-based and legacy file_uuid-based artifact deduplication
+
 ## [1.5.1] - 2026-02-17
 
 ### Fixed
