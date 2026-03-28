@@ -1380,7 +1380,7 @@ class TriliumSync:
         """Get existing artifact child notes for a conversation.
 
         Returns:
-            Dict mapping artifact identifier to note_id
+            Dict mapping artifact path (or file_uuid for legacy notes) to note_id
         """
         try:
             results = self.ea.search_note(
@@ -1390,19 +1390,25 @@ class TriliumSync:
                 existing = {}
                 for note in results["results"]:
                     note_id = note["noteId"]
-                    # Try to get the artifact identifier from attributes
                     try:
                         attrs = self.ea.get_note(note_id)
                         if attrs:
+                            # Prefer claudeArtifactPath for dedup (new approach)
                             for attr in attrs.get("attributes", []):
-                                if attr.get("name") == "claudeArtifactId":
+                                if attr.get("name") == "claudeArtifactPath" and attr.get("value"):
                                     existing[attr["value"]] = note_id
                                     break
                             else:
-                                # Fallback: use title
-                                title = note.get("title", "")
-                                if title.startswith("[Artifact] "):
-                                    existing[title[11:]] = note_id
+                                # Fallback to claudeArtifactId (legacy notes)
+                                for attr in attrs.get("attributes", []):
+                                    if attr.get("name") == "claudeArtifactId" and attr.get("value"):
+                                        existing[attr["value"]] = note_id
+                                        break
+                                else:
+                                    # Last resort: use title
+                                    title = note.get("title", "")
+                                    if title.startswith("[Artifact] "):
+                                        existing[title[11:]] = note_id
                     except Exception:
                         title = note.get("title", "")
                         if title.startswith("[Artifact] "):
