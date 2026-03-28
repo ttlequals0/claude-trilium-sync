@@ -1328,9 +1328,6 @@ def compute_content_hash(conv: dict) -> str:
                 {
                     "sender": m.get("sender"),
                     "text": filter_unsupported_blocks(m.get("text", "")),
-                    "attachments": [
-                        a.get("file_name", "") for a in m.get("attachments", [])
-                    ],
                 }
                 for m in conv.get("chat_messages", [])
             ],
