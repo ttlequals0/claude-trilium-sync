@@ -115,22 +115,6 @@ def filter_unsupported_blocks(text: str) -> str:
     return text.strip()
 
 
-# Map artifact type to file extension
-ARTIFACT_TYPE_EXTENSIONS = {
-    "application/vnd.ant.react": ".jsx",
-    "application/vnd.ant.code": "",  # uses language attr
-    "text/markdown": ".md",
-    "text/html": ".html",
-    "image/svg+xml": ".svg",
-    "application/vnd.ant.mermaid": ".mermaid",
-    "text/plain": ".txt",
-    "text/csv": ".csv",
-    "application/json": ".json",
-    "application/xml": ".xml",
-    "application/x-latex": ".tex",
-    "text/vnd.graphviz": ".dot",
-}
-
 # Map language attribute to file extension
 LANGUAGE_EXTENSIONS = {
     "python": ".py",
@@ -175,52 +159,6 @@ LANGUAGE_EXTENSIONS = {
     "terraform": ".tf",
     "nix": ".nix",
 }
-
-
-def get_artifact_extension(artifact: dict) -> str:
-    """Determine file extension for an artifact based on type and language."""
-    art_type = artifact.get("type", "")
-    language = artifact.get("language", "").lower()
-
-    # For code type, prefer language-based extension
-    if art_type == "application/vnd.ant.code" and language:
-        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
-
-    # Otherwise use type-based extension
-    ext = ARTIFACT_TYPE_EXTENSIONS.get(art_type, "")
-    if ext:
-        return ext
-
-    # Fallback: try language if available
-    if language:
-        return LANGUAGE_EXTENSIONS.get(language, f".{language}")
-
-    return ".txt"
-
-
-def get_artifact_mime(artifact: dict) -> str:
-    """Determine MIME type for an artifact for Trilium file notes."""
-    art_type = artifact.get("type", "")
-    language = artifact.get("language", "").lower()
-
-    # Direct MIME types
-    if art_type in ("text/html", "text/markdown", "text/plain", "text/csv",
-                     "application/json", "application/xml", "image/svg+xml"):
-        return art_type
-
-    # Code types
-    if art_type in ("application/vnd.ant.code", "application/vnd.ant.react"):
-        if art_type == "application/vnd.ant.react":
-            return "application/javascript"
-        if language in ("python",):
-            return "text/x-python"
-        if language in ("javascript", "jsx"):
-            return "application/javascript"
-        if language in ("typescript", "tsx"):
-            return "application/typescript"
-        return "text/plain"
-
-    return "text/plain"
 
 
 # Extensions that should be treated as text content (code notes in Trilium)
