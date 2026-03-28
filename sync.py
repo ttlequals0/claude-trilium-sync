@@ -1043,11 +1043,11 @@ class TriliumSync:
         file_item: dict,
         file_content: Optional[bytes] = None,
     ) -> Optional[str]:
-        """Create a child note for a files_v2 artifact under the conversation note.
+        """Create a child note for an artifact file under the conversation note.
 
         Args:
             parent_note_id: The conversation note ID to attach to
-            file_item: A files_v2 item dict with file_name, file_uuid, path, etc.
+            file_item: Dict with file_name, file_uuid (path), and path keys
             file_content: Optional downloaded binary content of the file
 
         Returns:
@@ -1254,7 +1254,7 @@ class TriliumSync:
         Args:
             conv: The conversation dict from Claude API
             existing_note_id: Optional existing Trilium note ID to update
-            claude_api: Optional ClaudeAPI instance for downloading attachments
+            claude_api: Optional ClaudeAPI instance for listing and downloading artifacts
         """
         title = conv.get("name", "Untitled Conversation")
         content = self._format_conversation(conv)
