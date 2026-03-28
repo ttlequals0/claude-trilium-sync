@@ -8,9 +8,9 @@ Automatically sync your Claude.ai conversations to Trilium Notes.
 - **Incremental updates**: Only syncs changed conversations using content hashing
 - **Merge support**: Updates existing notes when conversations are extended
 - **Artifact capture**: Downloads Claude-generated files (markdown, code, etc.) from the sandbox
-- **Formatted output**: Converts messages to nicely styled HTML with code highlighting
+- **Formatted output**: Converts messages to HTML with syntax-highlighted code blocks
 - **Cloudflare bypass**: Uses FlareSolverr to handle Claude.ai's Cloudflare protection
-- **Docker-ready**: Designed to run as a container alongside FlareSolverr
+- **Docker-ready**: Runs as a container alongside FlareSolverr
 
 ## Prerequisites
 
@@ -131,7 +131,7 @@ You'll receive a high-priority notification when authentication fails, with a di
 1. **Fetch conversations**: Routes requests through FlareSolverr to Claude's internal API
 2. **Check for changes**: Computes content hash and compares with last sync
 3. **Sync to Trilium**: Creates new notes or updates existing ones via ETAPI
-4. **Capture artifacts**: Lists sandbox files via `wiggle/list-files`, downloads Claude-generated outputs
+4. **Capture artifacts**: Finds and downloads files Claude created in the sandbox
 5. **Track state**: Saves sync state to persist between restarts
 
 ### Note Structure
