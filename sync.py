@@ -694,6 +694,63 @@ class ClaudeAPI:
         log.info("[CLAUDE API] Priming Cloudflare cookies via FlareSolverr...")
         await self._get_org_id()
 
+    async def list_conversation_files(self, conv_id: str) -> Optional[dict]:
+        """List all files in a conversation's sandbox via the wiggle endpoint.
+
+        Returns a dict with 'files' (list of paths) and 'files_metadata' (list
+        of dicts with path, size, content_type, created_at, custom_metadata).
+
+        Args:
+            conv_id: The conversation UUID
+
+        Returns:
+            Parsed JSON response dict, or None on error
+        """
+        org_id = await self._get_org_id()
+        wiggle_url = (
+            f"{self.BASE_URL}/api/organizations/{org_id}/conversations/{conv_id}"
+            f"/wiggle/list-files"
+        )
+
+        log.debug(f"[CLAUDE API] Listing files for conversation {conv_id[:8]}...")
+
+        try:
+            response = await self._flaresolverr_request(wiggle_url)
+            status_code = response.get("status", 0)
+            body = response.get("body", "")
+
+            if status_code >= 400:
+                log.debug(f"[CLAUDE API] list-files returned {status_code} for {conv_id[:8]}")
+                return None
+
+            # Parse JSON from FlareSolverr response
+            try:
+                result = json.loads(body)
+            except json.JSONDecodeError:
+                # Try extracting from <pre> tags
+                json_match = re.search(r'<pre[^>]*>(.*?)</pre>', body, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group(1))
+                else:
+                    log.debug(f"[CLAUDE API] Failed to parse list-files response for {conv_id[:8]}")
+                    return None
+
+            if isinstance(result, dict) and result.get("success"):
+                file_count = len(result.get("files", []))
+                log.debug(f"[CLAUDE API] Conversation {conv_id[:8]}... has {file_count} file(s)")
+                return result
+
+            # Check for error response
+            if isinstance(result, dict) and "error" in result:
+                log.debug(f"[CLAUDE API] list-files error for {conv_id[:8]}: {result['error']}")
+                return None
+
+            return result
+
+        except Exception as e:
+            log.debug(f"[CLAUDE API] Failed to list files for {conv_id[:8]}: {e}")
+            return None
+
     async def get_artifact_file(self, conv_id: str, file_path: str) -> Optional[bytes]:
         """Download a file via the wiggle endpoint (sandbox output files).
 
