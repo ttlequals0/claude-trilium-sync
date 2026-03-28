@@ -7,6 +7,7 @@ Automatically sync your Claude.ai conversations to Trilium Notes.
 - **Automatic sync**: Runs periodically to check for new/updated conversations
 - **Incremental updates**: Only syncs changed conversations using content hashing
 - **Merge support**: Updates existing notes when conversations are extended
+- **Artifact capture**: Downloads Claude-generated files (markdown, code, etc.) from the sandbox
 - **Formatted output**: Converts messages to nicely styled HTML with code highlighting
 - **Cloudflare bypass**: Uses FlareSolverr to handle Claude.ai's Cloudflare protection
 - **Docker-ready**: Designed to run as a container alongside FlareSolverr
@@ -130,7 +131,8 @@ You'll receive a high-priority notification when authentication fails, with a di
 1. **Fetch conversations**: Routes requests through FlareSolverr to Claude's internal API
 2. **Check for changes**: Computes content hash and compares with last sync
 3. **Sync to Trilium**: Creates new notes or updates existing ones via ETAPI
-4. **Track state**: Saves sync state to persist between restarts
+4. **Capture artifacts**: Lists sandbox files via `wiggle/list-files`, downloads Claude-generated outputs
+5. **Track state**: Saves sync state to persist between restarts
 
 ### Note Structure
 
@@ -139,6 +141,12 @@ Notes are created under a "Claude Chats" parent note with:
 - `#claudeChat` label on each conversation
 - `#claudeConversationId` with the Claude UUID
 - `#claudeUpdatedAt` with last update timestamp
+
+Claude-generated artifacts (files created in the sandbox) are saved as child notes:
+- `#claudeArtifact` label on each artifact
+- `#claudeArtifactPath` with the sandbox file path
+- Text files (`.md`, `.py`, etc.) stored as code notes
+- Binary files (`.zip`, etc.) stored as file notes
 
 ## Docker Compose Setup
 
